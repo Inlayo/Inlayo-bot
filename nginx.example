@@ -15,17 +15,17 @@ server {
     }
 
     location = /terms-of-service {
-        root Inlayo-bot;
+        root /path/to/Inlayo-bot;
         try_files /terms-of-service.html =404;
     }
 
     location = /privacy-policy {
-        root Inlayo-bot;
+        root /path/to/Inlayo-bot;
         try_files /privacy-policy.html =404;
     }
 
     location = /verify-user {
-        root Inlayo-bot;
+        root /path/to/Inlayo-bot;
         try_files /verify-user.html =404;
     }
 }
