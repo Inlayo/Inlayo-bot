@@ -10,6 +10,9 @@ const OSU_URL_REGEX =
 const OSU_PATH_REGEX =
   /osu\.ppy\.sh\/(beatmaps?|beatmapsets|b|s)\/(\d+)/i;
 
+const OSU_BEATMAP_FRAGMENT_REGEX =
+  /#(?:osu|taiko|fruits|mania)\/(\d+)/i;
+
 const SCREENSHOT_REGEX = /^screenshot\d*\.(?:png|jpg|jpeg)$/i;
 
 function parseOsuUrl(url) {
@@ -36,11 +39,14 @@ function parseOsuUrl(url) {
 
     case "s":
     case "beatmapset":
-    case "beatmapsets":
+    case "beatmapsets": {
+      const fragmentMatch = url.match(OSU_BEATMAP_FRAGMENT_REGEX);
+
       return {
-        beatmapId: null,
+        beatmapId: fragmentMatch?.[1] ?? null,
         beatmapsetId: id,
       };
+    }
 
     default:
       return {
@@ -68,21 +74,24 @@ function getEmbedText(embed) {
 }
 
 function isOsuEmbed(message) {
-  return message.embeds?.some((embed) => {
-    const text = getEmbedText(embed);
+  return (
+    message.embeds?.some((embed) => {
+      const text = getEmbedText(embed);
 
-    return (
-      /osu\.ppy\.sh/i.test(text) ||
-      /\bbeatmaps?\b/i.test(text) ||
-      /\bbeatmapset\b/i.test(text) ||
-      /\bpp\b/i.test(text)
-    );
-  }) ?? false;
+      return (
+        /osu\.ppy\.sh/i.test(text) ||
+        /\bbeatmaps?\b/i.test(text) ||
+        /\bbeatmapset\b/i.test(text) ||
+        /\bpp\b/i.test(text)
+      );
+    }) ?? false
+  );
 }
 
 function getOsuIdsFromEmbed(message) {
   return (message.embeds ?? []).flatMap((embed) => {
     const text = getEmbedText(embed);
+
     const urls = text.match(OSU_URL_REGEX) ?? [];
 
     return urls.map(parseOsuUrl);
@@ -90,9 +99,11 @@ function getOsuIdsFromEmbed(message) {
 }
 
 function isScreenshotMessage(message) {
-  return message.attachments?.some(({ name = "" }) =>
-    SCREENSHOT_REGEX.test(name)
-  ) ?? false;
+  return (
+    message.attachments?.some(({ name = "" }) =>
+      SCREENSHOT_REGEX.test(name)
+    ) ?? false
+  );
 }
 
 function cleanupPendingMaps() {
@@ -112,14 +123,36 @@ function cleanupPendingMaps() {
 }
 
 function mapsMatch(pending, embedIds) {
-  if (pending.type === "screenshot" || embedIds.length === 0) {
+  if (pending.type === "screenshot") {
     return true;
   }
 
+  if (embedIds.length === 0) {
+    return false;
+  }
+
   return embedIds.some(
-    ({ beatmapId, beatmapsetId }) =>
-      (pending.beatmapId && pending.beatmapId === beatmapId) ||
-      (pending.beatmapsetId && pending.beatmapsetId === beatmapsetId)
+    ({ beatmapId, beatmapsetId }) => {
+      // 정확한 beatmap ID 매칭
+      if (
+        pending.beatmapId &&
+        beatmapId &&
+        pending.beatmapId === beatmapId
+      ) {
+        return true;
+      }
+
+      // beatmapset ID 매칭
+      if (
+        pending.beatmapsetId &&
+        beatmapsetId &&
+        pending.beatmapsetId === beatmapsetId
+      ) {
+        return true;
+      }
+
+      return false;
+    }
   );
 }
 
@@ -188,7 +221,10 @@ function rememberUserMaps(message) {
 
 function removePendingEntry(channelId, target) {
   const entries = pendingMaps.get(channelId) ?? [];
-  const remaining = entries.filter((entry) => entry !== target);
+
+  const remaining = entries.filter(
+    (entry) => entry !== target
+  );
 
   if (remaining.length > 0) {
     pendingMaps.set(channelId, remaining);
@@ -198,9 +234,21 @@ function removePendingEntry(channelId, target) {
 }
 
 function findMatchingPendingEntry(entries, embedIds) {
-  return [...entries]
+  // 1. 정확한 ID 매칭을 먼저 시도
+  const exactMatch = [...entries]
     .reverse()
     .find((entry) => mapsMatch(entry, embedIds));
+
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  // 2. ID를 못 찾았거나 ID가 서로 다른 경우
+  // 가장 오래된 pending을 fallback으로 사용
+  //
+  // osu embed가 여러 개 연속으로 생성되는 경우
+  // 먼저 들어온 링크부터 처리하기 위한 방식
+  return entries[0] ?? null;
 }
 
 async function handleOsuBotMessage(message) {
@@ -219,12 +267,13 @@ async function handleOsuBotMessage(message) {
   }
 
   const embedIds = getOsuIdsFromEmbed(message);
-  const pending = findMatchingPendingEntry(entries, embedIds);
+
+  const pending = findMatchingPendingEntry(
+    entries,
+    embedIds
+  );
 
   if (!pending) {
-    console.log(
-      `Skipped osu! embed for an unmatched map: ${message.id}.`
-    );
     return;
   }
 
@@ -237,7 +286,11 @@ async function handleOsuBotMessage(message) {
 
   try {
     await message.delete();
-    removePendingEntry(channelId, pending);
+
+    removePendingEntry(
+      channelId,
+      pending
+    );
 
     console.log(
       `Deleted osu! embed: ${message.id} (trigger: ${pending.type}).`
