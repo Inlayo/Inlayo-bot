@@ -7,13 +7,17 @@ const OSU_BOT_ID = "289066747443675143";
 const OSU_URL_REGEX =
   /https?:\/\/(?:www\.)?osu\.ppy\.sh\/(?:beatmaps?|beatmapsets|b|s)\/[^\s<>]+/gi;
 
+const OSU_SCREENSHOT_URL_REGEX =
+  /https?:\/\/(?:www\.)?osu\.ppy\.sh\/ss\/\d+(?:\/[^\s<>]+)?/gi;
+
 const OSU_PATH_REGEX =
   /osu\.ppy\.sh\/(beatmaps?|beatmapsets|b|s)\/(\d+)/i;
 
 const OSU_BEATMAP_FRAGMENT_REGEX =
   /#(?:osu|taiko|fruits|mania)\/(\d+)/i;
 
-const SCREENSHOT_REGEX = /^screenshot\d*\.(?:png|jpg|jpeg)$/i;
+const SCREENSHOT_REGEX =
+  /^screenshot\d*\.(?:png|jpg|jpeg)$/i;
 
 function parseOsuUrl(url) {
   const match = url.match(OSU_PATH_REGEX);
@@ -40,7 +44,8 @@ function parseOsuUrl(url) {
     case "s":
     case "beatmapset":
     case "beatmapsets": {
-      const fragmentMatch = url.match(OSU_BEATMAP_FRAGMENT_REGEX);
+      const fragmentMatch =
+        url.match(OSU_BEATMAP_FRAGMENT_REGEX);
 
       return {
         beatmapId: fragmentMatch?.[1] ?? null,
@@ -91,7 +96,6 @@ function isOsuEmbed(message) {
 function getOsuIdsFromEmbed(message) {
   return (message.embeds ?? []).flatMap((embed) => {
     const text = getEmbedText(embed);
-
     const urls = text.match(OSU_URL_REGEX) ?? [];
 
     return urls.map(parseOsuUrl);
@@ -111,11 +115,15 @@ function cleanupPendingMaps() {
 
   for (const [channelId, entries] of pendingMaps) {
     const activeEntries = entries.filter(
-      ({ createdAt }) => now - createdAt <= EXPIRE_TIME
+      ({ createdAt }) =>
+        now - createdAt <= EXPIRE_TIME
     );
 
     if (activeEntries.length > 0) {
-      pendingMaps.set(channelId, activeEntries);
+      pendingMaps.set(
+        channelId,
+        activeEntries
+      );
     } else {
       pendingMaps.delete(channelId);
     }
@@ -133,7 +141,6 @@ function mapsMatch(pending, embedIds) {
 
   return embedIds.some(
     ({ beatmapId, beatmapsetId }) => {
-      // 정확한 beatmap ID 매칭
       if (
         pending.beatmapId &&
         beatmapId &&
@@ -142,7 +149,6 @@ function mapsMatch(pending, embedIds) {
         return true;
       }
 
-      // beatmapset ID 매칭
       if (
         pending.beatmapsetId &&
         beatmapsetId &&
@@ -157,7 +163,8 @@ function mapsMatch(pending, embedIds) {
 }
 
 function addPendingEntries(channelId, entries) {
-  const currentEntries = pendingMaps.get(channelId) ?? [];
+  const currentEntries =
+    pendingMaps.get(channelId) ?? [];
 
   pendingMaps.set(
     channelId,
@@ -167,7 +174,11 @@ function addPendingEntries(channelId, entries) {
   );
 }
 
-function createPendingEntry(message, type, ids = {}) {
+function createPendingEntry(
+  message,
+  type,
+  ids = {}
+) {
   return {
     type,
     beatmapId: ids.beatmapId ?? null,
@@ -179,24 +190,52 @@ function createPendingEntry(message, type, ids = {}) {
 }
 
 function rememberUserMaps(message) {
-  const urls = message.content.match(OSU_URL_REGEX) ?? [];
+  const urls =
+    message.content.match(OSU_URL_REGEX) ?? [];
+
+  const screenshotUrls =
+    message.content.match(OSU_SCREENSHOT_URL_REGEX) ?? [];
+
   const entries = [];
 
   for (const url of urls) {
     const ids = parseOsuUrl(url);
 
-    if (!ids.beatmapId && !ids.beatmapsetId) {
+    if (
+      !ids.beatmapId &&
+      !ids.beatmapsetId
+    ) {
       continue;
     }
 
     entries.push(
-      createPendingEntry(message, "url", ids)
+      createPendingEntry(
+        message,
+        "url",
+        ids
+      )
+    );
+  }
+
+  if (screenshotUrls.length > 0) {
+    entries.push(
+      createPendingEntry(
+        message,
+        "screenshot"
+      )
+    );
+
+    console.log(
+      `${message.author.tag} shared an osu! screenshot URL: ${screenshotUrls.join(", ")}.`
     );
   }
 
   if (isScreenshotMessage(message)) {
     entries.push(
-      createPendingEntry(message, "screenshot")
+      createPendingEntry(
+        message,
+        "screenshot"
+      )
     );
 
     console.log(
@@ -208,7 +247,10 @@ function rememberUserMaps(message) {
     return false;
   }
 
-  addPendingEntries(message.channel.id, entries);
+  addPendingEntries(
+    message.channel.id,
+    entries
+  );
 
   if (urls.length > 0) {
     console.log(
@@ -219,35 +261,41 @@ function rememberUserMaps(message) {
   return true;
 }
 
-function removePendingEntry(channelId, target) {
-  const entries = pendingMaps.get(channelId) ?? [];
+function removePendingEntry(
+  channelId,
+  target
+) {
+  const entries =
+    pendingMaps.get(channelId) ?? [];
 
   const remaining = entries.filter(
     (entry) => entry !== target
   );
 
   if (remaining.length > 0) {
-    pendingMaps.set(channelId, remaining);
+    pendingMaps.set(
+      channelId,
+      remaining
+    );
   } else {
     pendingMaps.delete(channelId);
   }
 }
 
-function findMatchingPendingEntry(entries, embedIds) {
-  // 1. 정확한 ID 매칭을 먼저 시도
+function findMatchingPendingEntry(
+  entries,
+  embedIds
+) {
   const exactMatch = [...entries]
     .reverse()
-    .find((entry) => mapsMatch(entry, embedIds));
+    .find((entry) =>
+      mapsMatch(entry, embedIds)
+    );
 
   if (exactMatch) {
     return exactMatch;
   }
 
-  // 2. ID를 못 찾았거나 ID가 서로 다른 경우
-  // 가장 오래된 pending을 fallback으로 사용
-  //
-  // osu embed가 여러 개 연속으로 생성되는 경우
-  // 먼저 들어온 링크부터 처리하기 위한 방식
   return entries[0] ?? null;
 }
 
@@ -257,21 +305,26 @@ async function handleOsuBotMessage(message) {
   }
 
   const channelId = message.channel.id;
-  const entries = pendingMaps.get(channelId) ?? [];
+
+  const entries =
+    pendingMaps.get(channelId) ?? [];
 
   if (entries.length === 0) {
     console.log(
       `Received an osu! embed without a pending map: ${message.id}.`
     );
+
     return;
   }
 
-  const embedIds = getOsuIdsFromEmbed(message);
+  const embedIds =
+    getOsuIdsFromEmbed(message);
 
-  const pending = findMatchingPendingEntry(
-    entries,
-    embedIds
-  );
+  const pending =
+    findMatchingPendingEntry(
+      entries,
+      embedIds
+    );
 
   if (!pending) {
     return;
@@ -281,6 +334,7 @@ async function handleOsuBotMessage(message) {
     console.log(
       `Skipped osu! embed because the message is not deletable: ${message.id}.`
     );
+
     return;
   }
 
@@ -306,7 +360,8 @@ async function handleOsuBotMessage(message) {
 async function handleMessage(message) {
   if (
     !message.guild ||
-    message.author.id === message.client.user.id
+    message.author.id ===
+      message.client.user.id
   ) {
     return;
   }
@@ -318,7 +373,9 @@ async function handleMessage(message) {
     return;
   }
 
-  if (message.author.id === OSU_BOT_ID) {
+  if (
+    message.author.id === OSU_BOT_ID
+  ) {
     await handleOsuBotMessage(message);
   }
 }
