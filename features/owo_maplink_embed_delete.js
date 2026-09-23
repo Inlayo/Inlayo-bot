@@ -1,6 +1,6 @@
 const pendingMaps = new Map();
 
-const EXPIRE_TIME = 60 * 1000;
+const EXPIRE_TIME = 600 * 1000;
 const MAX_PENDING_MAPS_PER_CHANNEL = 10;
 const OSU_BOT_ID = "289066747443675143";
 
