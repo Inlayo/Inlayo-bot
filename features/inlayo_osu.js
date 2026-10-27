@@ -40,10 +40,27 @@ const MODS = [
 ];
 const MODES = [
   { name: "osu!", value: 0 },
-  { name: "Taiko", value: 1 },
-  { name: "Catch", value: 2 },
-  { name: "Mania", value: 3 },
+  { name: "taiko!", value: 1 },
+  { name: "catch!", value: 2 },
+  { name: "mania!", value: 3 },
 ];
+const PROFILE_MODES = [
+  ...MODES,
+  { name: "rx!std", value: 4 },
+  { name: "rx!taiko", value: 5 },
+  { name: "rx!catch", value: 6 },
+  { name: "ap!std", value: 8 },
+];
+const PROFILE_MODE_TOKENS = new Map(
+  PROFILE_MODES.map(({ name, value }) => [name.toLowerCase(), value]),
+);
+const MODE_NAMES = new Map([
+  ...MODES.map(({ name, value }) => [value, name]),
+  [4, "osu! Relax"],
+  [5, "Taiko Relax"],
+  [6, "Catch Relax"],
+  [8, "osu! Autopilot"],
+]);
 
 const COMMANDS = [
   {
@@ -198,7 +215,9 @@ const commands = COMMANDS.flatMap((spec) =>
       ["profile", "top", "recent"].includes(spec.type)
     ) {
       command.addIntegerOption((option) =>
-        addModeChoices(option.setName("mode").setDescription("Game mode")),
+        (spec.type === "profile" ? addProfileModeChoices : addModeChoices)(
+          option.setName("mode").setDescription("Game mode"),
+        ),
       );
     }
 
@@ -228,6 +247,10 @@ const commands = COMMANDS.flatMap((spec) =>
 
 function addModeChoices(option) {
   return option.addChoices(...MODES);
+}
+
+function addProfileModeChoices(option) {
+  return option.addChoices(...PROFILE_MODES);
 }
 
 function getApiBaseUrl() {
@@ -375,7 +398,7 @@ function getOption(interaction, name) {
 }
 
 function getModeName(mode) {
-  return MODES.find((entry) => entry.value === mode)?.name ?? "osu!";
+  return MODE_NAMES.get(mode) ?? "osu!";
 }
 
 function getAccuracy(value) {
@@ -464,9 +487,7 @@ function getMapName(beatmap) {
 
 function escapeMarkdown(value) {
   return value
-    .replace(/([\\_*~`|])/g, "\\$1")
-    .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]");
+    .replace(/([\\_*~`|])/g, "\\$1");
 }
 
 function createProfileEmbed(player, stats, mode) {
@@ -477,7 +498,7 @@ function createProfileEmbed(player, stats, mode) {
   const urls = getServerUrls();
 
   return new EmbedBuilder()
-    .setColor(0x1f8b4c)
+    .setColor(0xaaaaff)
     .setAuthor({
       name: player.name,
       url: urls.profile(player.id),
@@ -525,19 +546,14 @@ function createScoreEmbed(player, score, mode, scope, index = 1) {
   const date = formatDate(score.play_time);
 
   const embed = new EmbedBuilder()
-    .setColor(0x1f8b4c)
+    .setColor(0xaaaaff)
     .setAuthor({
       name: player.name,
       url: urls.profile(player.id),
-      iconURL: urls.avatar(player.id),
+      ...(!isRecent && { iconURL: urls.avatar(player.id) }),
     })
     .setTitle(mapName.slice(0, 256))
     .setURL(beatmap ? urls.beatmap(beatmap.id) : urls.profile(player.id))
-    .setThumbnail(
-      Number.isInteger(beatmap?.set_id) && beatmap.set_id > 0
-        ? urls.beatmapThumbnail(beatmap.set_id)
-        : urls.avatar(player.id),
-    )
     .setFooter({
       text: `${isRecent ? `Recent score #${index}` : `Top score #${index}`} • ${getModeName(mode)}${date ? ` • ${date}` : ""}`,
     })
@@ -569,6 +585,12 @@ function createScoreEmbed(player, score, mode, scope, index = 1) {
       },
     );
 
+  if (Number.isInteger(beatmap?.set_id) && beatmap.set_id > 0) {
+    embed.setThumbnail(urls.beatmapThumbnail(beatmap.set_id));
+  } else if (!isRecent) {
+    embed.setThumbnail(urls.avatar(player.id));
+  }
+
   return embed;
 }
 
@@ -595,27 +617,32 @@ function createScoresEmbed(player, scores, mode, scope, offset = 0) {
 
     return [
       `**#${number} ${grade} ${mapLink}**`,
-      `${performance} (${getAccuracy(score.acc)}) [**${formatNumber(score.max_combo)}x**/${maxCombo}x] ${misses}**+${formatMods(score.mods)}**${date}`,
+      `${performance} (${getAccuracy(score.acc)}) [**${formatNumber(score.max_combo)}x**/${maxCombo}x] ${isRecent ? "x" : ""}${misses}**+${formatMods(score.mods)}**${date}`,
     ].join("\n");
   });
   const embed = new EmbedBuilder()
-    .setColor(0x1f8b4c)
+    .setColor(0xaaaaff)
     .setAuthor({
       name: player.name,
       url: urls.profile(player.id),
-      iconURL: urls.avatar(player.id),
+      ...(!isRecent && { iconURL: urls.avatar(player.id) }),
     })
     .setURL(urls.profile(player.id))
     .setDescription(
       lines.join("\n").slice(0, 4096),
     )
-    .setThumbnail(urls.avatar(player.id))
     .setFooter({
       text: `Page 1/1 • Mode: ${getModeName(mode)}`,
     });
 
   if (isRecent) {
     embed.setTitle("List of recent scores:");
+    const firstBeatmapSetId = scores[0]?.beatmap?.set_id;
+    if (Number.isInteger(firstBeatmapSetId) && firstBeatmapSetId > 0) {
+      embed.setThumbnail(urls.beatmapThumbnail(firstBeatmapSetId));
+    }
+  } else {
+    embed.setThumbnail(urls.avatar(player.id));
   }
 
   return embed;
@@ -784,6 +811,14 @@ async function handleMessage(message) {
   if (spec.type === "recent" && /^\d+$/.test(args[0] ?? "")) {
     index ??= Number(args.shift());
   }
+  let mode;
+  if (spec.type === "profile" && args.length > 0) {
+    const requestedMode = PROFILE_MODE_TOKENS.get(args[args.length - 1].toLowerCase());
+    if (requestedMode !== undefined) {
+      mode = requestedMode;
+      args.pop();
+    }
+  }
   if (index !== undefined && (!Number.isInteger(index) || index < 1 || index > 100)) {
     await message.reply("Score position must be between 1 and 100.");
     return;
@@ -810,6 +845,7 @@ async function handleMessage(message) {
       name: commandName,
       options: [
         ...(username ? [{ name: "username", value: username }] : []),
+        ...(mode !== undefined ? [{ name: "mode", value: mode }] : []),
         ...(index ? [{ name: "index", value: index }] : []),
       ],
     },
