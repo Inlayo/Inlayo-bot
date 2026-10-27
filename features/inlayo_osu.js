@@ -16,6 +16,7 @@ const API_TIMEOUT = 15_000;
 const SCORE_API_TIMEOUT = 30_000;
 const ACCOUNT_FILE = path.join(__dirname, "data", "osu_accounts.json");
 const TOP_PAGE_SIZE = 5;
+const TOP_PREFETCH_PAGES = 2;
 const TOP_SESSION_TTL = 15 * 60 * 1000;
 const TOP_COMPONENT_PREFIX = "osu_top";
 const topPaginationSessions = new Map();
@@ -668,14 +669,27 @@ function createTopPaginationSession(player, mode, pageSize, ownerId, scores) {
   }
 
   const id = crypto.randomBytes(12).toString("hex");
+  const pages = new Map();
+  for (let page = 0; page < TOP_PREFETCH_PAGES; page += 1) {
+    const start = page * pageSize;
+    const entries = scores.slice(start, start + pageSize);
+    if (entries.length > 0) {
+      pages.set(page, entries);
+    }
+  }
+
+  const hasNextByPage = new Map([
+    [0, scores.length > pageSize],
+    [1, scores.length > pageSize * TOP_PREFETCH_PAGES],
+  ]);
   topPaginationSessions.set(id, {
     ownerId,
     player: { id: player.id, name: player.name },
     mode,
     page: 0,
     pageSize,
-    hasNext: true,
-    pages: new Map([[0, scores.slice(0, pageSize)]]),
+    pages,
+    hasNextByPage,
     expiresAt: now + TOP_SESSION_TTL,
   });
 
@@ -729,7 +743,7 @@ function getTopPaginationSession(interaction) {
 
   if (
     (match[2] === "prev" && session.page === 0) ||
-    (match[2] === "next" && !session.hasNext)
+    (match[2] === "next" && !session.hasNextByPage.get(session.page))
   ) {
     return { error: "There are no more top-score pages in that direction." };
   }
@@ -825,7 +839,7 @@ async function executeCommand(interaction) {
     index !== undefined
       ? 1
       : spec.type === "top"
-        ? pageSize
+        ? pageSize * TOP_PREFETCH_PAGES + 1
         : 1;
   const offset = index === undefined ? 0 : index - 1;
   const scores = await getPlayerScores(
@@ -861,7 +875,7 @@ async function executeCommand(interaction) {
     };
   }
 
-  const hasNext = scores.length === pageSize;
+  const hasNext = scores.length > pageSize;
   const sessionId = hasNext
     ? createTopPaginationSession(
         player,
@@ -917,20 +931,22 @@ async function handleComponentInteraction(interaction) {
   try {
     let scores = session.pages.get(page);
     if (!scores) {
-      scores = await getPlayerScores(
+      const fetchedScores = await getPlayerScores(
         session.player.id,
         session.mode,
         "best",
-        session.pageSize,
+        session.pageSize + 1,
         false,
         page * session.pageSize,
         SCORE_API_TIMEOUT,
       );
+      scores = fetchedScores.slice(0, session.pageSize);
       session.pages.set(page, scores);
+      session.hasNextByPage.set(page, fetchedScores.length > session.pageSize);
     }
 
     if (scores.length === 0) {
-      session.hasNext = false;
+      session.hasNextByPage.set(page - 1, false);
       session.expiresAt = Date.now() + TOP_SESSION_TTL;
       const previousPage = page - 1;
       const previousScores = session.pages.get(previousPage) ?? [];
@@ -955,9 +971,9 @@ async function handleComponentInteraction(interaction) {
     }
 
     session.page = page;
-    session.hasNext = scores.length === session.pageSize;
     session.expiresAt = Date.now() + TOP_SESSION_TTL;
     const sessionId = interaction.data.custom_id.split(":")[1];
+    const hasNext = session.hasNextByPage.get(page) === true;
 
     return {
       embeds: [
@@ -972,7 +988,7 @@ async function handleComponentInteraction(interaction) {
       components: createTopPaginationComponents(
         sessionId,
         session.page,
-        session.hasNext,
+        hasNext,
       ),
     };
   } catch (error) {
@@ -996,7 +1012,7 @@ async function handleComponentInteraction(interaction) {
       components: createTopPaginationComponents(
         interaction.data.custom_id.split(":")[1],
         session.page,
-        session.hasNext,
+        session.hasNextByPage.get(session.page) === true,
       ),
     };
   }
