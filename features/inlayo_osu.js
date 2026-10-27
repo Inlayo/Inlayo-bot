@@ -256,7 +256,7 @@ function getServerUrls() {
       `${apiUrl.protocol}//a.${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}/${playerId}`,
     beatmap: (beatmapId) => `${serverOrigin}/b/${beatmapId}`,
     cover: (beatmapsetId) =>
-      `https://assets.${serverHost}/beatmaps/${beatmapsetId}/covers/cover.jpg`,
+      `https://assets.ppy.sh/beatmaps/${beatmapsetId}/covers/cover.jpg`,
   };
 }
 
@@ -424,14 +424,14 @@ function getMapName(beatmap) {
   return `${beatmap.artist} - ${beatmap.title} [${beatmap.version}]`;
 }
 
-function createProfileEmbed(player, stats, mode) {
+function createProfileEmbed(player, stats, mode, topScore) {
   const rank = stats.rank ? `#${formatNumber(stats.rank)}` : "Unranked";
   const countryRank = stats.country_rank
     ? `#${formatNumber(stats.country_rank)}`
     : "Unranked";
   const urls = getServerUrls();
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(0x5865f2)
     .setAuthor({
       name: player.name,
@@ -474,53 +474,65 @@ function createProfileEmbed(player, stats, mode) {
         value: `XH ${formatNumber(stats.xh_count)} · X ${formatNumber(stats.x_count)} · SH ${formatNumber(stats.sh_count)} · S ${formatNumber(stats.s_count)} · A ${formatNumber(stats.a_count)}`,
       },
     );
-}
 
-function createScoreEmbed(player, scores, mode, scope, offset = 0) {
-  const isRecent = scope === "recent";
-  const urls = getServerUrls();
-  const embed = new EmbedBuilder()
-    .setColor(0x5865f2)
-    .setTitle(
-      isRecent
-        ? `${player.name} · Recent Plays`
-        : `${player.name} · Top Plays`,
-    )
-    .setURL(urls.profile(player.id))
-    .setDescription(`${getModeName(mode)} · ${scores.length} scores`)
-    .setThumbnail(urls.avatar(player.id));
-  embed.setFooter({ text: "Inlayo's osu private server" });
-
-  for (const [index, score] of scores.entries()) {
-    const beatmap = score.beatmap;
-    const date = formatDate(score.play_time);
-    const pp = Number(score.pp);
-    const scoreValue = Number(score.score);
-    const details = [
-      `${getAccuracy(score.acc)} · ${formatMods(score.mods)} · ${formatNumber(score.max_combo)}x combo`,
-      Number.isFinite(pp) && pp > 0
-        ? `${pp.toFixed(2)}pp`
-        : `${formatNumber(scoreValue)} score`,
-      `${score.grade || "?"}${score.perfect ? " · FC" : ""}`,
-      date,
-    ].filter(Boolean);
-
-    const mapName = getMapName(beatmap);
-    const mapTitle = beatmap
-      ? `[${mapName}](${urls.beatmap(beatmap.id)})`
-      : mapName;
-    embed.addFields({
-      name: `${isRecent ? `Recent #${offset + index + 1}` : `#${offset + index + 1}`} · ${mapTitle}`.slice(
-        0,
-        256,
-      ),
-      value: details.join(" · ").slice(0, 1024),
-    });
+  const beatmapsetId = topScore?.beatmap?.set_id;
+  if (Number.isInteger(beatmapsetId) && beatmapsetId > 0) {
+    embed.setImage(urls.cover(beatmapsetId));
   }
 
-  const firstBeatmapsetId = scores[0]?.beatmap?.set_id;
-  if (Number.isInteger(firstBeatmapsetId) && firstBeatmapsetId > 0) {
-    embed.setImage(urls.cover(firstBeatmapsetId));
+  return embed;
+}
+
+function createScoreEmbed(player, score, mode, scope, index = 1) {
+  const isRecent = scope === "recent";
+  const urls = getServerUrls();
+  const beatmap = score.beatmap;
+  const pp = Number(score.pp);
+  const scoreValue = Number(score.score);
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setAuthor({
+      name: player.name,
+      url: urls.profile(player.id),
+      iconURL: urls.avatar(player.id),
+    })
+    .setTitle(
+      isRecent
+        ? `Recent Play #${index}`
+        : `Top Play #${index}`,
+    )
+    .setURL(urls.profile(player.id))
+    .setDescription(
+      `${beatmap ? `[${getMapName(beatmap)}](${urls.beatmap(beatmap.id)})` : getMapName(beatmap)}\n${getModeName(mode)} · Inlayo's osu private server`,
+    )
+    .setThumbnail(urls.avatar(player.id))
+    .setFooter({ text: formatDate(score.play_time) || "Inlayo's osu private server" })
+    .addFields(
+      { name: "Accuracy", value: getAccuracy(score.acc), inline: true },
+      { name: "Mods", value: formatMods(score.mods), inline: true },
+      {
+        name: "Combo",
+        value: `${formatNumber(score.max_combo)}x`,
+        inline: true,
+      },
+      {
+        name: "Performance",
+        value:
+          Number.isFinite(pp) && pp > 0
+            ? `${pp.toFixed(2)}pp`
+            : `${formatNumber(scoreValue)} score`,
+        inline: true,
+      },
+      {
+        name: "Grade",
+        value: `${score.grade || "?"}${score.perfect ? " · FC" : ""}`,
+        inline: true,
+      },
+    );
+
+  const beatmapsetId = beatmap?.set_id;
+  if (Number.isInteger(beatmapsetId) && beatmapsetId > 0) {
+    embed.setImage(urls.cover(beatmapsetId));
   }
 
   return embed;
@@ -601,8 +613,16 @@ async function executeCommand(interaction) {
   const player = await getPlayer(username);
 
   if (spec.type === "profile") {
-    const stats = await getPlayerModeStats(player.id, mode);
-    return { embeds: [createProfileEmbed(player, stats, mode)] };
+    const [stats, topScores] = await Promise.all([
+      getPlayerModeStats(player.id, mode),
+      getPlayerScores(player.id, mode, "best", 1, false, 0),
+    ]);
+
+    return {
+      embeds: [
+        createProfileEmbed(player, stats, mode, topScores[0] ?? null),
+      ],
+    };
   }
 
   const scope = spec.type === "top" ? "best" : "recent";
@@ -633,7 +653,9 @@ async function executeCommand(interaction) {
   }
 
   return {
-    embeds: [createScoreEmbed(player, scores, mode, scope, offset)],
+    embeds: scores.map((score, scoreIndex) =>
+      createScoreEmbed(player, score, mode, scope, offset + scoreIndex + 1),
+    ),
   };
 }
 
