@@ -632,7 +632,7 @@ function createScoresEmbed(player, scores, mode, page, pageSize) {
 
     return [
       `**#${number} ${grade} ${mapLink}**`,
-      `${performance} (${getAccuracy(score.acc)}) [**${formatNumber(score.max_combo)}x**/${maxCombo}x] x ${formatNumber(misses)}**+${formatMods(score.mods)}**`,
+      `${performance} (${getAccuracy(score.acc)}) [**${formatNumber(score.max_combo)}x**/${maxCombo}x] x ${formatNumber(misses)} **+${formatMods(score.mods)}**`,
     ].join("\n");
   });
   const embed = new EmbedBuilder()
