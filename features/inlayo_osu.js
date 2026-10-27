@@ -254,9 +254,10 @@ function getServerUrls() {
     profile: (playerId) => `${serverOrigin}/u/${playerId}`,
     avatar: (playerId) =>
       `${apiUrl.protocol}//a.${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}/${playerId}`,
-    beatmap: (beatmapId) => `${serverOrigin}/b/${beatmapId}`,
-    cover: (beatmapsetId) =>
-      `https://assets.ppy.sh/beatmaps/${beatmapsetId}/covers/cover.jpg`,
+    beatmap: (beatmapId) =>
+      `${apiUrl.protocol}//b.${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}/${beatmapId}`,
+    beatmapThumbnail: (beatmapsetId) =>
+      `https://assets.ppy.sh/beatmaps/${beatmapsetId}/covers/list@2x.jpg`,
   };
 }
 
@@ -416,6 +417,43 @@ function formatDate(value) {
       });
 }
 
+function formatTimeAgo(value) {
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return null;
+  }
+
+  const seconds = Math.round((timestamp - Date.now()) / 1000);
+  const units = [
+    ["year", 60 * 60 * 24 * 365],
+    ["month", 60 * 60 * 24 * 30],
+    ["day", 60 * 60 * 24],
+    ["hour", 60 * 60],
+    ["minute", 60],
+  ];
+  const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+
+  for (const [unit, duration] of units) {
+    if (Math.abs(seconds) >= duration) {
+      return formatter.format(Math.round(seconds / duration), unit);
+    }
+  }
+
+  return formatter.format(seconds, "second");
+}
+
+function formatJoinedDate(creationTime) {
+  const timestamp = Number(creationTime);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return "Join date unavailable";
+  }
+
+  return new Date(timestamp * 1000).toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+  });
+}
+
 function getMapName(beatmap) {
   if (!beatmap) {
     return "Unknown beatmap";
@@ -424,63 +462,52 @@ function getMapName(beatmap) {
   return `${beatmap.artist} - ${beatmap.title} [${beatmap.version}]`;
 }
 
-function createProfileEmbed(player, stats, mode, topScore) {
+function escapeMarkdown(value) {
+  return value
+    .replace(/([\\_*~`|])/g, "\\$1")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+}
+
+function createProfileEmbed(player, stats, mode) {
   const rank = stats.rank ? `#${formatNumber(stats.rank)}` : "Unranked";
   const countryRank = stats.country_rank
     ? `#${formatNumber(stats.country_rank)}`
     : "Unranked";
   const urls = getServerUrls();
 
-  const embed = new EmbedBuilder()
-    .setColor(0x5865f2)
+  return new EmbedBuilder()
+    .setColor(0x1f8b4c)
     .setAuthor({
       name: player.name,
       url: urls.profile(player.id),
       iconURL: urls.avatar(player.id),
     })
-    .setTitle(`${getModeName(mode)} Profile`)
     .setURL(urls.profile(player.id))
-    .setDescription(`${player.country || "No country"} · Inlayo's osu private server`)
+    .setDescription(
+      [
+        `Accuracy: **${getAccuracy(stats.acc)}**`,
+        `Playcount: **${formatNumber(stats.plays)}** (${formatPlaytime(stats.playtime)})`,
+        `Max combo: **${formatNumber(stats.max_combo)}x**`,
+        `Grades: XH **${formatNumber(stats.xh_count)}** · X **${formatNumber(stats.x_count)}** · SH **${formatNumber(stats.sh_count)}** · S **${formatNumber(stats.s_count)}** · A **${formatNumber(stats.a_count)}**`,
+      ].join("\n"),
+    )
     .setThumbnail(urls.avatar(player.id))
-    .setFooter({ text: "Inlayo's osu private server" })
     .addFields(
-      { name: "PP", value: formatNumber(Math.round(stats.pp)), inline: true },
-      { name: "Global Rank", value: rank, inline: true },
-      { name: "Country Rank", value: countryRank, inline: true },
-      { name: "Accuracy", value: getAccuracy(stats.acc), inline: true },
-      { name: "Play Count", value: formatNumber(stats.plays), inline: true },
       {
-        name: "Play Time",
-        value: formatPlaytime(stats.playtime),
+        name: "Performance",
+        value: `**${formatNumber(Math.round(stats.pp))}pp**\nGlobal: **${rank}** · Country: **${countryRank}**`,
         inline: true,
       },
       {
-        name: "Maximum Combo",
-        value: `${formatNumber(stats.max_combo)}x`,
+        name: "Score",
+        value: `Ranked: **${formatNumber(stats.rscore)}**\nTotal: **${formatNumber(stats.tscore)}**`,
         inline: true,
       },
-      {
-        name: "Total Score",
-        value: formatNumber(stats.tscore),
-        inline: true,
-      },
-      {
-        name: "Ranked Score",
-        value: formatNumber(stats.rscore),
-        inline: true,
-      },
-      {
-        name: "Grades",
-        value: `XH ${formatNumber(stats.xh_count)} · X ${formatNumber(stats.x_count)} · SH ${formatNumber(stats.sh_count)} · S ${formatNumber(stats.s_count)} · A ${formatNumber(stats.a_count)}`,
-      },
-    );
-
-  const beatmapsetId = topScore?.beatmap?.set_id;
-  if (Number.isInteger(beatmapsetId) && beatmapsetId > 0) {
-    embed.setImage(urls.cover(beatmapsetId));
-  }
-
-  return embed;
+    )
+    .setFooter({
+      text: `Mode: ${getModeName(mode)} • Joined Inlayo's osu private server ${formatJoinedDate(player.creation_time)}`,
+    });
 }
 
 function createScoreEmbed(player, score, mode, scope, index = 1) {
@@ -489,50 +516,106 @@ function createScoreEmbed(player, score, mode, scope, index = 1) {
   const beatmap = score.beatmap;
   const pp = Number(score.pp);
   const scoreValue = Number(score.score);
+  const mapName = getMapName(beatmap);
+  const performance =
+    Number.isFinite(pp) && pp > 0
+      ? `${pp.toFixed(2)}pp`
+      : `${formatNumber(scoreValue)} score`;
+  const misses = Number(score.nmiss) || 0;
+  const date = formatDate(score.play_time);
+
   const embed = new EmbedBuilder()
-    .setColor(0x5865f2)
+    .setColor(0x1f8b4c)
     .setAuthor({
       name: player.name,
       url: urls.profile(player.id),
       iconURL: urls.avatar(player.id),
     })
-    .setTitle(
-      isRecent
-        ? `Recent Play #${index}`
-        : `Top Play #${index}`,
+    .setTitle(mapName.slice(0, 256))
+    .setURL(beatmap ? urls.beatmap(beatmap.id) : urls.profile(player.id))
+    .setThumbnail(
+      Number.isInteger(beatmap?.set_id) && beatmap.set_id > 0
+        ? urls.beatmapThumbnail(beatmap.set_id)
+        : urls.avatar(player.id),
     )
-    .setURL(urls.profile(player.id))
-    .setDescription(
-      `${beatmap ? `[${getMapName(beatmap)}](${urls.beatmap(beatmap.id)})` : getMapName(beatmap)}\n${getModeName(mode)} · Inlayo's osu private server`,
-    )
-    .setThumbnail(urls.avatar(player.id))
-    .setFooter({ text: formatDate(score.play_time) || "Inlayo's osu private server" })
+    .setFooter({
+      text: `${isRecent ? `Recent score #${index}` : `Top score #${index}`} • ${getModeName(mode)}${date ? ` • ${date}` : ""}`,
+    })
     .addFields(
-      { name: "Accuracy", value: getAccuracy(score.acc), inline: true },
-      { name: "Mods", value: formatMods(score.mods), inline: true },
-      {
-        name: "Combo",
-        value: `${formatNumber(score.max_combo)}x`,
-        inline: true,
-      },
       {
         name: "Performance",
-        value:
-          Number.isFinite(pp) && pp > 0
-            ? `${pp.toFixed(2)}pp`
-            : `${formatNumber(scoreValue)} score`,
+        value: `${score.grade || "?"}${score.perfect ? " FC" : ""} · **${performance}**`,
         inline: true,
       },
       {
-        name: "Grade",
-        value: `${score.grade || "?"}${score.perfect ? " · FC" : ""}`,
+        name: "Accuracy",
+        value: getAccuracy(score.acc),
         inline: true,
       },
-    );
+      {
+        name: "Combo",
+        value: `[**${formatNumber(score.max_combo)}x**/${formatNumber(beatmap?.max_combo)}x]`,
+        inline: true,
+      },
+      {
+        name: "Misses",
+        value: formatNumber(misses),
+        inline: true,
+      },
+      {
+        name: "Mods",
+        value: formatMods(score.mods),
+        inline: true,
+      },
+    });
 
-  const beatmapsetId = beatmap?.set_id;
-  if (Number.isInteger(beatmapsetId) && beatmapsetId > 0) {
-    embed.setImage(urls.cover(beatmapsetId));
+  return embed;
+}
+
+function createScoresEmbed(player, scores, mode, scope, offset = 0) {
+  const isRecent = scope === "recent";
+  const urls = getServerUrls();
+  const lines = scores.map((score, index) => {
+    const beatmap = score.beatmap;
+    const mapName = getMapName(beatmap).slice(0, 180);
+    const mapLink = beatmap
+      ? `[${escapeMarkdown(mapName)}](${urls.beatmap(beatmap.id)})`
+      : mapName;
+    const pp = Number(score.pp);
+    const scoreValue = Number(score.score);
+    const performance =
+      Number.isFinite(pp) && pp > 0
+        ? `${pp.toFixed(2)}pp`
+        : `${formatNumber(scoreValue)} score`;
+    const misses = Number(score.nmiss) || 0;
+    const date = isRecent ? ` · ${formatTimeAgo(score.play_time) || ""}` : "";
+    const number = offset + index + 1;
+    const grade = `${score.grade || "?"}${score.perfect ? " FC" : ""}`;
+    const maxCombo = formatNumber(beatmap?.max_combo);
+
+    return [
+      `**#${number} ${grade} ${mapLink}**`,
+      `${performance} (${getAccuracy(score.acc)}) [**${formatNumber(score.max_combo)}x**/${maxCombo}x] ${misses}**+${formatMods(score.mods)}**${date}`,
+    ].join("\n");
+  });
+  const embed = new EmbedBuilder()
+    .setColor(0x1f8b4c)
+    .setAuthor({
+      name: player.name,
+      url: urls.profile(player.id),
+      iconURL: urls.avatar(player.id),
+    })
+    .setURL(urls.profile(player.id))
+    .setDescription(
+      lines.join("\n").slice(0, 4096),
+    )
+    .setThumbnail(urls.avatar(player.id))
+    .setFooter({
+      text: `Page 1/1 • Mode: ${getModeName(mode)}`,
+    });
+
+  if (isRecent) {
+    embed.setTitle("List of recent scores:");
   }
 
   return embed;
@@ -613,16 +696,9 @@ async function executeCommand(interaction) {
   const player = await getPlayer(username);
 
   if (spec.type === "profile") {
-    const [stats, topScores] = await Promise.all([
-      getPlayerModeStats(player.id, mode),
-      getPlayerScores(player.id, mode, "best", 1, false, 0),
-    ]);
+    const stats = await getPlayerModeStats(player.id, mode);
 
-    return {
-      embeds: [
-        createProfileEmbed(player, stats, mode, topScores[0] ?? null),
-      ],
-    };
+    return { embeds: [createProfileEmbed(player, stats, mode)] };
   }
 
   const scope = spec.type === "top" ? "best" : "recent";
@@ -652,11 +728,13 @@ async function executeCommand(interaction) {
     };
   }
 
-  return {
-    embeds: scores.map((score, scoreIndex) =>
-      createScoreEmbed(player, score, mode, scope, offset + scoreIndex + 1),
-    ),
-  };
+  if (index !== undefined) {
+    return {
+      embeds: [createScoreEmbed(player, scores[0], mode, scope, offset + 1)],
+    };
+  }
+
+  return { embeds: [createScoresEmbed(player, scores, mode, scope, offset)] };
 }
 
 async function handleInteraction(interaction) {
