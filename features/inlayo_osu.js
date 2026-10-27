@@ -13,6 +13,7 @@ const {
 } = require("discord.js");
 
 const API_TIMEOUT = 15_000;
+const SCORE_API_TIMEOUT = 30_000;
 const ACCOUNT_FILE = path.join(__dirname, "data", "osu_accounts.json");
 const TOP_PAGE_SIZE = 5;
 const TOP_SESSION_TTL = 15 * 60 * 1000;
@@ -339,10 +340,10 @@ function getDiscordUserId(interaction) {
   return interaction.user?.id ?? interaction.member?.user?.id ?? null;
 }
 
-async function apiGet(path, params) {
+async function apiGet(path, params, timeout = API_TIMEOUT) {
   const response = await axios.get(`${getApiBaseUrl()}${path}`, {
     params,
-    timeout: API_TIMEOUT,
+    timeout,
   });
   const payload = response.data;
 
@@ -379,15 +380,20 @@ async function getPlayerScores(
   limit,
   includeFailed,
   offset,
+  timeout = API_TIMEOUT,
 ) {
-  const scores = await apiGet(`/players/${playerId}/scores`, {
-    scope,
-    mode,
-    limit,
-    offset,
-    include_failed: includeFailed,
-    pp_only: scope === "best",
-  });
+  const scores = await apiGet(
+    `/players/${playerId}/scores`,
+    {
+      scope,
+      mode,
+      limit,
+      offset,
+      include_failed: includeFailed,
+      pp_only: scope === "best",
+    },
+    timeout,
+  );
 
   if (!Array.isArray(scores)) {
     throw new Error("Inlayo API returned an invalid score list.");
@@ -426,9 +432,15 @@ function formatPlaytime(seconds) {
 
 function formatMods(mods) {
   const value = Number(mods) || 0;
-  const names = MODS.filter(([bit]) => (value & bit) === bit).map(
-    ([, name]) => name,
-  );
+  const hasNightcore = (value & 512) === 512;
+  const hasPerfect = (value & 16384) === 16384;
+  const names = MODS.filter(([bit, name]) => {
+    if ((value & bit) !== bit) {
+      return false;
+    }
+
+    return !(hasNightcore && name === "DT") && !(hasPerfect && name === "SD");
+  }).map(([, name]) => name);
 
   return names.length > 0 ? names.join("") : "NM";
 }
@@ -643,7 +655,7 @@ function createScoresEmbed(player, scores, mode, page, pageSize) {
   return embed;
 }
 
-function createTopPaginationSession(player, mode, pageSize, ownerId) {
+function createTopPaginationSession(player, mode, pageSize, ownerId, scores) {
   if (!ownerId) {
     return null;
   }
@@ -663,6 +675,7 @@ function createTopPaginationSession(player, mode, pageSize, ownerId) {
     page: 0,
     pageSize,
     hasNext: true,
+    pages: new Map([[0, scores.slice(0, pageSize)]]),
     expiresAt: now + TOP_SESSION_TTL,
   });
 
@@ -812,7 +825,7 @@ async function executeCommand(interaction) {
     index !== undefined
       ? 1
       : spec.type === "top"
-        ? pageSize + 1
+        ? pageSize
         : 1;
   const offset = index === undefined ? 0 : index - 1;
   const scores = await getPlayerScores(
@@ -822,6 +835,7 @@ async function executeCommand(interaction) {
     limit,
     scope === "recent" && !spec.passes,
     offset,
+    spec.type === "top" ? SCORE_API_TIMEOUT : API_TIMEOUT,
   );
 
   if (scores.length === 0) {
@@ -847,14 +861,15 @@ async function executeCommand(interaction) {
     };
   }
 
-  const hasNext = scores.length > pageSize;
+  const hasNext = scores.length === pageSize;
   const sessionId = hasNext
     ? createTopPaginationSession(
         player,
         mode,
         pageSize,
         getDiscordUserId(interaction),
-      )
+      scores,
+    )
     : null;
 
   return {
@@ -900,24 +915,47 @@ async function handleComponentInteraction(interaction) {
   const { session, direction } = result;
   const page = session.page + (direction === "next" ? 1 : -1);
   try {
-    const scores = await getPlayerScores(
-      session.player.id,
-      session.mode,
-      "best",
-      session.pageSize + 1,
-      false,
-      page * session.pageSize,
-    );
+    let scores = session.pages.get(page);
+    if (!scores) {
+      scores = await getPlayerScores(
+        session.player.id,
+        session.mode,
+        "best",
+        session.pageSize,
+        false,
+        page * session.pageSize,
+        SCORE_API_TIMEOUT,
+      );
+      session.pages.set(page, scores);
+    }
+
     if (scores.length === 0) {
+      session.hasNext = false;
+      session.expiresAt = Date.now() + TOP_SESSION_TTL;
+      const previousPage = page - 1;
+      const previousScores = session.pages.get(previousPage) ?? [];
+      session.page = previousPage;
+
       return {
-        content: "No more top scores are available on this page.",
-        embeds: [],
-        components: [],
+        embeds: [
+          createScoresEmbed(
+            session.player,
+            previousScores,
+            session.mode,
+            previousPage,
+            session.pageSize,
+          ),
+        ],
+        components: createTopPaginationComponents(
+          interaction.data.custom_id.split(":")[1],
+          previousPage,
+          false,
+        ),
       };
     }
 
     session.page = page;
-    session.hasNext = scores.length > session.pageSize;
+    session.hasNext = scores.length === session.pageSize;
     session.expiresAt = Date.now() + TOP_SESSION_TTL;
     const sessionId = interaction.data.custom_id.split(":")[1];
 
@@ -946,8 +984,20 @@ async function handleComponentInteraction(interaction) {
 
     return {
       content: getPublicErrorMessage(error),
-      embeds: [],
-      components: [],
+      embeds: [
+        createScoresEmbed(
+          session.player,
+          session.pages.get(session.page) ?? [],
+          session.mode,
+          session.page,
+          session.pageSize,
+        ),
+      ],
+      components: createTopPaginationComponents(
+        interaction.data.custom_id.split(":")[1],
+        session.page,
+        session.hasNext,
+      ),
     };
   }
 }
