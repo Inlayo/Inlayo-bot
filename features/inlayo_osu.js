@@ -245,6 +245,21 @@ function getApiBaseUrl() {
   return `${url.origin}${basePath}/v2`;
 }
 
+function getServerUrls() {
+  const apiUrl = new URL(process.env.INLAYO_API_BASE);
+  const serverHost = apiUrl.hostname.replace(/^api\./i, "");
+  const serverOrigin = `${apiUrl.protocol}//${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}`;
+
+  return {
+    profile: (playerId) => `${serverOrigin}/u/${playerId}`,
+    avatar: (playerId) =>
+      `${apiUrl.protocol}//a.${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}/${playerId}`,
+    beatmap: (beatmapId) => `${serverOrigin}/b/${beatmapId}`,
+    cover: (beatmapsetId) =>
+      `https://assets.${serverHost}/beatmaps/${beatmapsetId}/covers/cover.jpg`,
+  };
+}
+
 function loadLinkedAccounts() {
   if (!fs.existsSync(ACCOUNT_FILE)) {
     return {};
@@ -378,7 +393,7 @@ function formatPlaytime(seconds) {
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
 
-  return hours > 0 ? `${hours}시간 ${minutes}분` : `${minutes}분`;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 }
 
 function formatMods(mods) {
@@ -394,56 +409,68 @@ function formatDate(value) {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? null
-    : date.toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+    : date.toLocaleString("en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+        timeZone: "UTC",
+      });
 }
 
 function getMapName(beatmap) {
   if (!beatmap) {
-    return "알 수 없는 비트맵";
+    return "Unknown beatmap";
   }
 
   return `${beatmap.artist} - ${beatmap.title} [${beatmap.version}]`;
 }
 
 function createProfileEmbed(player, stats, mode) {
-  const rank = stats.rank ? `#${formatNumber(stats.rank)}` : "랭크 없음";
+  const rank = stats.rank ? `#${formatNumber(stats.rank)}` : "Unranked";
   const countryRank = stats.country_rank
     ? `#${formatNumber(stats.country_rank)}`
-    : "랭크 없음";
+    : "Unranked";
+  const urls = getServerUrls();
 
   return new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle(`${player.name} 프로필`)
-    .setDescription(`${player.country || "국가 미설정"} · ${getModeName(mode)}`)
+    .setAuthor({
+      name: player.name,
+      url: urls.profile(player.id),
+      iconURL: urls.avatar(player.id),
+    })
+    .setTitle(`${getModeName(mode)} Profile`)
+    .setURL(urls.profile(player.id))
+    .setDescription(`${player.country || "No country"} · Inlayo's osu private server`)
+    .setThumbnail(urls.avatar(player.id))
     .setFooter({ text: "Inlayo's osu private server" })
     .addFields(
       { name: "PP", value: formatNumber(Math.round(stats.pp)), inline: true },
-      { name: "전 세계 랭크", value: rank, inline: true },
-      { name: "국가 랭크", value: countryRank, inline: true },
-      { name: "정확도", value: getAccuracy(stats.acc), inline: true },
-      { name: "플레이 횟수", value: formatNumber(stats.plays), inline: true },
+      { name: "Global Rank", value: rank, inline: true },
+      { name: "Country Rank", value: countryRank, inline: true },
+      { name: "Accuracy", value: getAccuracy(stats.acc), inline: true },
+      { name: "Play Count", value: formatNumber(stats.plays), inline: true },
       {
-        name: "플레이 시간",
+        name: "Play Time",
         value: formatPlaytime(stats.playtime),
         inline: true,
       },
       {
-        name: "최대 콤보",
+        name: "Maximum Combo",
         value: `${formatNumber(stats.max_combo)}x`,
         inline: true,
       },
       {
-        name: "총 점수",
+        name: "Total Score",
         value: formatNumber(stats.tscore),
         inline: true,
       },
       {
-        name: "랭크 점수",
+        name: "Ranked Score",
         value: formatNumber(stats.rscore),
         inline: true,
       },
       {
-        name: "랭크",
+        name: "Grades",
         value: `XH ${formatNumber(stats.xh_count)} · X ${formatNumber(stats.x_count)} · SH ${formatNumber(stats.sh_count)} · S ${formatNumber(stats.s_count)} · A ${formatNumber(stats.a_count)}`,
       },
     );
@@ -451,14 +478,17 @@ function createProfileEmbed(player, stats, mode) {
 
 function createScoreEmbed(player, scores, mode, scope, offset = 0) {
   const isRecent = scope === "recent";
+  const urls = getServerUrls();
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle(
       isRecent
-        ? `${player.name} 최근 플레이`
-        : `${player.name} 베스트 플레이`,
+        ? `${player.name} · Recent Plays`
+        : `${player.name} · Top Plays`,
     )
-    .setDescription(`${getModeName(mode)} · ${scores.length}개 점수`);
+    .setURL(urls.profile(player.id))
+    .setDescription(`${getModeName(mode)} · ${scores.length} scores`)
+    .setThumbnail(urls.avatar(player.id));
   embed.setFooter({ text: "Inlayo's osu private server" });
 
   for (const [index, score] of scores.entries()) {
@@ -467,21 +497,30 @@ function createScoreEmbed(player, scores, mode, scope, offset = 0) {
     const pp = Number(score.pp);
     const scoreValue = Number(score.score);
     const details = [
-      `${getAccuracy(score.acc)} · ${formatMods(score.mods)} · ${formatNumber(score.max_combo)}x`,
+      `${getAccuracy(score.acc)} · ${formatMods(score.mods)} · ${formatNumber(score.max_combo)}x combo`,
       Number.isFinite(pp) && pp > 0
         ? `${pp.toFixed(2)}pp`
-        : `${formatNumber(scoreValue)}점`,
+        : `${formatNumber(scoreValue)} score`,
       `${score.grade || "?"}${score.perfect ? " · FC" : ""}`,
       date,
     ].filter(Boolean);
 
+    const mapName = getMapName(beatmap);
+    const mapTitle = beatmap
+      ? `[${mapName}](${urls.beatmap(beatmap.id)})`
+      : mapName;
     embed.addFields({
-      name: `${isRecent ? `최근 #${offset + index + 1}` : `#${offset + index + 1}`} · ${getMapName(beatmap)}`.slice(
+      name: `${isRecent ? `Recent #${offset + index + 1}` : `#${offset + index + 1}`} · ${mapTitle}`.slice(
         0,
         256,
       ),
       value: details.join(" · ").slice(0, 1024),
     });
+  }
+
+  const firstBeatmapsetId = scores[0]?.beatmap?.set_id;
+  if (Number.isInteger(firstBeatmapsetId) && firstBeatmapsetId > 0) {
+    embed.setImage(urls.cover(firstBeatmapsetId));
   }
 
   return embed;
@@ -588,8 +627,8 @@ async function executeCommand(interaction) {
     return {
       content:
         spec.type === "recent"
-          ? `${player.name}님의 최근 플레이 기록이 없습니다.`
-          : `${player.name}님의 베스트 플레이 기록이 없습니다.`,
+          ? `${player.name} has no recent plays on Inlayo's osu private server.`
+          : `${player.name} has no top plays on Inlayo's osu private server.`,
     };
   }
 
