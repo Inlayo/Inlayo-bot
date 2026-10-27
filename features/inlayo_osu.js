@@ -567,7 +567,7 @@ function createScoreEmbed(player, score, mode, scope, index = 1) {
         value: formatMods(score.mods),
         inline: true,
       },
-    });
+    );
 
   return embed;
 }
