@@ -22,37 +22,23 @@ const HELP_TEXT = "Commands: channel, add <streamer>, delete <streamer>, list";
 const slashCommand = new SlashCommandBuilder()
   .setName("twitch")
   .setDescription("Manage Twitch stream notifications for this channel.")
-  .addSubcommand((command) =>
-    command
-      .setName("channel")
-      .setDescription("Set up stream notifications for this channel."),
-  )
-  .addSubcommand((command) =>
-    command
-      .setName("add")
-      .setDescription("Add a Twitch streamer to this channel.")
-      .addStringOption((option) =>
-        option
-          .setName("streamer")
-          .setDescription("Twitch streamer login")
-          .setRequired(true),
+  .addStringOption((option) =>
+    option
+      .setName("action")
+      .setDescription("Choose a Twitch notification action.")
+      .setRequired(true)
+      .addChoices(
+        { name: "channel", value: "channel" },
+        { name: "add", value: "add" },
+        { name: "delete", value: "delete" },
+        { name: "list", value: "list" },
       ),
   )
-  .addSubcommand((command) =>
-    command
-      .setName("delete")
-      .setDescription("Remove a Twitch streamer from this channel.")
-      .addStringOption((option) =>
-        option
-          .setName("streamer")
-          .setDescription("Twitch streamer login")
-          .setRequired(true),
-      ),
-  )
-  .addSubcommand((command) =>
-    command
-      .setName("list")
-      .setDescription("List Twitch streamers tracked in this channel."),
+  .addStringOption((option) =>
+    option
+      .setName("streamer")
+      .setDescription("Twitch streamer login (required for add and delete)")
+      .setRequired(false),
   )
   .toJSON();
 
@@ -81,6 +67,10 @@ function createDefaultSettings() {
 
 function getSettingsPath(channelId) {
   return path.join(SETTINGS_DIR, `${channelId}.json`);
+}
+
+function isChannelConfigured(channelId) {
+  return fs.existsSync(getSettingsPath(channelId));
 }
 
 function normalizeSettings(settings) {
@@ -119,13 +109,15 @@ function loadChannelSettings(channelId) {
   }
 }
 
-function saveChannelSettings(channelId, settings) {
+function writeChannelSettings(channelId, settings) {
   const file = getSettingsPath(channelId);
   const tempFile = `${file}.tmp`;
 
   try {
+    fs.mkdirSync(SETTINGS_DIR, { recursive: true });
     fs.writeFileSync(tempFile, JSON.stringify(settings, null, 2), "utf8");
     fs.renameSync(tempFile, file);
+    return true;
   } catch (error) {
     console.error(
       `Failed to save Twitch settings for channel ${channelId}:`,
@@ -139,7 +131,17 @@ function saveChannelSettings(channelId, settings) {
     } catch {
       // Ignore cleanup errors for the temporary file.
     }
+
+    return false;
   }
+}
+
+function saveChannelSettings(channelId, settings) {
+  if (!isChannelConfigured(channelId)) {
+    return false;
+  }
+
+  return writeChannelSettings(channelId, settings);
 }
 
 function getAllChannelIds() {
@@ -262,6 +264,10 @@ async function getTwitchStreamsByUserIds(userIds) {
 }
 
 async function addStreamer(channelId, name) {
+  if (!isChannelConfigured(channelId)) {
+    return "Run `!twitch channel` in this channel before managing streamers.";
+  }
+
   const normalizedName = name.replace(/^@/, "").trim().toLowerCase();
   if (!normalizedName) {
     return "Please provide a streamer name.";
@@ -289,7 +295,10 @@ async function addStreamer(channelId, name) {
     });
     settings.liveStatus[String(user.id)] = false;
 
-    saveChannelSettings(channelId, settings);
+    if (!saveChannelSettings(channelId, settings)) {
+      return "Failed to save channel settings. Please try again later.";
+    }
+
     return `Streamer ${user.login} added to this channel.`;
   } catch (error) {
     console.error(
@@ -301,6 +310,10 @@ async function addStreamer(channelId, name) {
 }
 
 function deleteStreamer(channelId, name) {
+  if (!isChannelConfigured(channelId)) {
+    return "Run `!twitch channel` in this channel before managing streamers.";
+  }
+
   const normalizedName = name.replace(/^@/, "").trim().toLowerCase();
   const settings = loadChannelSettings(channelId);
   const streamer = settings.streamers.find(
@@ -320,11 +333,18 @@ function deleteStreamer(channelId, name) {
   }
   delete settings.liveStatus[normalizedName];
 
-  saveChannelSettings(channelId, settings);
+  if (!saveChannelSettings(channelId, settings)) {
+    return "Failed to save channel settings. Please try again later.";
+  }
+
   return `Streamer ${normalizedName} removed from this channel.`;
 }
 
 function listStreamers(channelId) {
+  if (!isChannelConfigured(channelId)) {
+    return "Run `!twitch channel` in this channel before managing streamers.";
+  }
+
   const settings = loadChannelSettings(channelId);
 
   if (settings.streamers.length === 0) {
@@ -340,13 +360,26 @@ function listStreamers(channelId) {
 }
 
 function ensureChannelFile(channelId) {
-  const file = getSettingsPath(channelId);
-  if (!fs.existsSync(file)) {
-    saveChannelSettings(channelId, createDefaultSettings());
-    return true;
+  if (isChannelConfigured(channelId)) {
+    return false;
   }
 
-  return false;
+  if (!writeChannelSettings(channelId, createDefaultSettings())) {
+    return null;
+  }
+
+  return true;
+}
+
+function getChannelSetupMessage(created, command) {
+  if (created === null) {
+    return "Failed to set up Twitch notifications for this channel. Please try again later.";
+  }
+  if (!created) {
+    return "This channel is already set up for Twitch notifications.";
+  }
+
+  return `This channel is now set up for stream notifications. Use \`${command}\` to add streamers.`;
 }
 
 function getStreamerLiveStatus(settings, streamer) {
@@ -623,12 +656,11 @@ async function handleMessage(message) {
   const channelId = message.channel.id;
 
   switch (normalizedCommand) {
-    case "channel":
-      ensureChannelFile(channelId);
-      await message.reply(
-        "This channel is now set up for stream notifications. Use `!twitch add <streamer>` to add streamers.",
-      );
+    case "channel": {
+      const created = ensureChannelFile(channelId);
+      await message.reply(getChannelSetupMessage(created, "!twitch add <streamer>"));
       break;
+    }
 
     case "add":
       await message.reply(await addStreamer(channelId, rawName ?? ""));
@@ -656,21 +688,26 @@ async function handleInteraction(interaction) {
     return { content: "Twitch commands can only be used in a server." };
   }
 
-  const subcommand = interaction.data.options?.[0]?.name;
-  const streamer = interaction.data.options?.[0]?.options?.find(
-    (option) => option.name === "streamer",
-  )?.value;
+  const options = interaction.data.options ?? [];
+  const action = options.find((option) => option.name === "action")?.value;
+  const streamer = options.find((option) => option.name === "streamer")?.value;
 
-  switch (subcommand) {
-    case "channel":
-      ensureChannelFile(interaction.channel_id);
+  switch (action) {
+    case "channel": {
+      const created = ensureChannelFile(interaction.channel_id);
       return {
-        content:
-          "This channel is now set up for stream notifications. Use `/twitch add` to add streamers.",
+        content: getChannelSetupMessage(created, "/twitch (action: add)"),
       };
+    }
     case "add":
+      if (!streamer?.trim()) {
+        return { content: "Please provide a streamer name for the add action." };
+      }
       return { content: await addStreamer(interaction.channel_id, streamer ?? "") };
     case "delete":
+      if (!streamer?.trim()) {
+        return { content: "Please provide a streamer name for the delete action." };
+      }
       return {
         content: deleteStreamer(interaction.channel_id, streamer ?? ""),
       };
