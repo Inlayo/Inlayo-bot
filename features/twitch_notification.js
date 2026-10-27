@@ -6,6 +6,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  SlashCommandBuilder,
 } = require("discord.js");
 
 const SETTINGS_DIR = path.join(__dirname, "twitch_notification", "settings");
@@ -15,8 +16,45 @@ const TWITCH_API_BASE = "https://api.twitch.tv/helix";
 const TWITCH_AUTH_URL = "https://id.twitch.tv/oauth2/token";
 const TWITCH_CHECK_INTERVAL = 60 * 1000;
 const TWITCH_TOKEN_REFRESH_INTERVAL = 60 * 60 * 1000;
-const PREFIX = "!t";
+const PREFIX = "!twitch";
 const MAX_USER_IDS_PER_REQUEST = 100;
+const HELP_TEXT = "Commands: channel, add <streamer>, delete <streamer>, list";
+const slashCommand = new SlashCommandBuilder()
+  .setName("twitch")
+  .setDescription("Manage Twitch stream notifications for this channel.")
+  .addSubcommand((command) =>
+    command
+      .setName("channel")
+      .setDescription("Set up stream notifications for this channel."),
+  )
+  .addSubcommand((command) =>
+    command
+      .setName("add")
+      .setDescription("Add a Twitch streamer to this channel.")
+      .addStringOption((option) =>
+        option
+          .setName("streamer")
+          .setDescription("Twitch streamer login")
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((command) =>
+    command
+      .setName("delete")
+      .setDescription("Remove a Twitch streamer from this channel.")
+      .addStringOption((option) =>
+        option
+          .setName("streamer")
+          .setDescription("Twitch streamer login")
+          .setRequired(true),
+      ),
+  )
+  .addSubcommand((command) =>
+    command
+      .setName("list")
+      .setDescription("List Twitch streamers tracked in this channel."),
+  )
+  .toJSON();
 
 let client = null;
 let twitchToken = null;
@@ -397,7 +435,7 @@ async function sendLiveNotification(streamInfo, userInfo, channelId) {
     .setTitle(streamInfo.title || "No title")
     .setURL(streamUrl)
     .setColor("#9146FF")
-    .setFooter({ text: "made by Inlayo" })
+    .setFooter({ text: "Inlayo's osu private server" })
     .setTimestamp();
 
   if (streamInfo.game_name) {
@@ -574,7 +612,7 @@ async function handleMessage(message) {
   if (
     message.author.bot ||
     !message.guild ||
-    !message.content.toLowerCase().startsWith(PREFIX)
+    !new RegExp(`^${PREFIX}(?:\\s|$)`, "i").test(message.content)
   ) {
     return;
   }
@@ -588,7 +626,7 @@ async function handleMessage(message) {
     case "channel":
       ensureChannelFile(channelId);
       await message.reply(
-        "This channel is now set up for stream notifications. Use `!t add <streamer>` to add streamers.",
+        "This channel is now set up for stream notifications. Use `!twitch add <streamer>` to add streamers.",
       );
       break;
 
@@ -609,7 +647,37 @@ async function handleMessage(message) {
       break;
 
     default:
-      await message.reply("Commands: channel, add, delete, list");
+      await message.reply(HELP_TEXT);
+  }
+}
+
+async function handleInteraction(interaction) {
+  if (!interaction.guild_id || !interaction.channel_id) {
+    return { content: "Twitch commands can only be used in a server." };
+  }
+
+  const subcommand = interaction.data.options?.[0]?.name;
+  const streamer = interaction.data.options?.[0]?.options?.find(
+    (option) => option.name === "streamer",
+  )?.value;
+
+  switch (subcommand) {
+    case "channel":
+      ensureChannelFile(interaction.channel_id);
+      return {
+        content:
+          "This channel is now set up for stream notifications. Use `/twitch add` to add streamers.",
+      };
+    case "add":
+      return { content: await addStreamer(interaction.channel_id, streamer ?? "") };
+    case "delete":
+      return {
+        content: deleteStreamer(interaction.channel_id, streamer ?? ""),
+      };
+    case "list":
+      return { content: listStreamers(interaction.channel_id) };
+    default:
+      return { content: HELP_TEXT };
   }
 }
 
@@ -667,6 +735,10 @@ function getStatus() {
 module.exports = {
   initialize,
   handleMessage,
+  getSlashCommands: () => [slashCommand],
+  isSupportedCommand: (interaction) =>
+    interaction?.data?.name === slashCommand.name,
+  handleInteraction,
   getStatus,
   destroy,
 };

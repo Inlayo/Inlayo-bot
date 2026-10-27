@@ -1,3 +1,4 @@
 twitch_notification/
 node_modules/
 .env
+features/data/

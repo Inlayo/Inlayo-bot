@@ -15,6 +15,7 @@ const {
 
 const owoMaplinkEmbedDelete = require("./features/owo_maplink_embed_delete");
 const twitchNotification = require("./features/twitch_notification");
+const inlayoOsu = require("./features/inlayo_osu");
 
 const PORT = Number(process.env.PORT) || 3000;
 const { DISCORD_PUBLIC_KEY, DISCORD_TOKEN } = process.env;
@@ -49,6 +50,15 @@ client.once("ready", async () => {
   });
 
   try {
+    await inlayoOsu.registerCommands(
+      client.user.id,
+      twitchNotification.getSlashCommands(),
+    );
+  } catch (error) {
+    console.error("Failed to register Inlayo's osu private server commands:", error);
+  }
+
+  try {
     await twitchNotification.initialize(client);
   } catch (error) {
     console.error("Failed to initialize Twitch notifications:", error);
@@ -56,6 +66,12 @@ client.once("ready", async () => {
 });
 
 client.on("messageCreate", async (message) => {
+  try {
+    await inlayoOsu.handleMessage(message);
+  } catch (error) {
+    console.error("Failed to handle Inlayo's osu private server command:", error);
+  }
+
   try {
     await owoMaplinkEmbedDelete.handleMessage(message);
   } catch (error) {
@@ -77,9 +93,34 @@ app.post(
       return res.json({ type: InteractionResponseType.PONG });
     }
 
-    return res.status(200).json({
-      type: InteractionResponseType.PONG,
+    if (req.body?.type !== InteractionType.APPLICATION_COMMAND) {
+      return res.status(400).json({ error: "Unsupported interaction." });
+    }
+
+    const isTwitchCommand = twitchNotification.isSupportedCommand(req.body);
+    if (!isTwitchCommand && !inlayoOsu.isSupportedCommand(req.body)) {
+      return res.status(400).json({ error: "Unsupported interaction." });
+    }
+
+    res.json({
+      type: InteractionResponseType.DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE,
+      ...(inlayoOsu.isPrivateCommand(req.body)
+        ? { data: { flags: 64 } }
+        : {}),
     });
+
+    const handleInteraction = isTwitchCommand
+      ? twitchNotification.handleInteraction
+      : inlayoOsu.handleInteraction;
+
+    void handleInteraction(req.body)
+      .then((payload) => inlayoOsu.editOriginalResponse(req.body, payload))
+      .catch((error) => {
+        console.error(
+          "Failed to send Inlayo's osu private server command response:",
+          error,
+        );
+      });
   },
 );
 
