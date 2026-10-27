@@ -1,7 +1,11 @@
 const axios = require("axios");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   EmbedBuilder,
   REST,
   Routes,
@@ -10,6 +14,10 @@ const {
 
 const API_TIMEOUT = 15_000;
 const ACCOUNT_FILE = path.join(__dirname, "data", "osu_accounts.json");
+const TOP_PAGE_SIZE = 5;
+const TOP_SESSION_TTL = 15 * 60 * 1000;
+const TOP_COMPONENT_PREFIX = "osu_top";
+const topPaginationSessions = new Map();
 const MODS = [
   [1, "NF"],
   [2, "EZ"],
@@ -44,22 +52,22 @@ const MODES = [
   { name: "catch!", value: 2 },
   { name: "mania!", value: 3 },
 ];
-const PROFILE_MODES = [
+const SUPPORTED_MODES = [
   ...MODES,
   { name: "rx!std", value: 4 },
   { name: "rx!taiko", value: 5 },
   { name: "rx!catch", value: 6 },
   { name: "ap!std", value: 8 },
 ];
-const PROFILE_MODE_TOKENS = new Map(
-  PROFILE_MODES.map(({ name, value }) => [name.toLowerCase(), value]),
+const MODE_TOKENS = new Map(
+  SUPPORTED_MODES.map(({ name, value }) => [name.toLowerCase(), value]),
 );
 const MODE_NAMES = new Map([
   ...MODES.map(({ name, value }) => [value, name]),
-  [4, "osu! Relax"],
-  [5, "Taiko Relax"],
-  [6, "Catch Relax"],
-  [8, "osu! Autopilot"],
+  [4, "rx!std"],
+  [5, "rx!taiko"],
+  [6, "rx!catch"],
+  [8, "ap!std"],
 ]);
 
 const COMMANDS = [
@@ -215,7 +223,7 @@ const commands = COMMANDS.flatMap((spec) =>
       ["profile", "top", "recent"].includes(spec.type)
     ) {
       command.addIntegerOption((option) =>
-        (spec.type === "profile" ? addProfileModeChoices : addModeChoices)(
+        addSupportedModeChoices(
           option.setName("mode").setDescription("Game mode"),
         ),
       );
@@ -245,12 +253,8 @@ const commands = COMMANDS.flatMap((spec) =>
   }),
 );
 
-function addModeChoices(option) {
-  return option.addChoices(...MODES);
-}
-
-function addProfileModeChoices(option) {
-  return option.addChoices(...PROFILE_MODES);
+function addSupportedModeChoices(option) {
+  return option.addChoices(...SUPPORTED_MODES);
 }
 
 function getApiBaseUrl() {
@@ -594,10 +598,10 @@ function createScoreEmbed(player, score, mode, scope, index = 1) {
   return embed;
 }
 
-function createScoresEmbed(player, scores, mode, scope, offset = 0) {
-  const isRecent = scope === "recent";
+function createScoresEmbed(player, scores, mode, page, pageSize) {
   const urls = getServerUrls();
-  const lines = scores.map((score, index) => {
+  const visibleScores = scores.slice(0, pageSize);
+  const lines = visibleScores.map((score, index) => {
     const beatmap = score.beatmap;
     const mapName = getMapName(beatmap).slice(0, 180);
     const mapLink = beatmap
@@ -610,14 +614,13 @@ function createScoresEmbed(player, scores, mode, scope, offset = 0) {
         ? `${pp.toFixed(2)}pp`
         : `${formatNumber(scoreValue)} score`;
     const misses = Number(score.nmiss) || 0;
-    const date = isRecent ? ` · ${formatTimeAgo(score.play_time) || ""}` : "";
-    const number = offset + index + 1;
+    const number = page * pageSize + index + 1;
     const grade = `${score.grade || "?"}${score.perfect ? " FC" : ""}`;
     const maxCombo = formatNumber(beatmap?.max_combo);
 
     return [
       `**#${number} ${grade} ${mapLink}**`,
-      `${performance} (${getAccuracy(score.acc)}) [**${formatNumber(score.max_combo)}x**/${maxCombo}x] ${isRecent ? "x" : ""}${misses}**+${formatMods(score.mods)}**${date}`,
+      `${performance} (${getAccuracy(score.acc)}) [**${formatNumber(score.max_combo)}x**/${maxCombo}x] x ${formatNumber(misses)}**+${formatMods(score.mods)}**`,
     ].join("\n");
   });
   const embed = new EmbedBuilder()
@@ -625,27 +628,100 @@ function createScoresEmbed(player, scores, mode, scope, offset = 0) {
     .setAuthor({
       name: player.name,
       url: urls.profile(player.id),
-      ...(!isRecent && { iconURL: urls.avatar(player.id) }),
+      iconURL: urls.avatar(player.id),
     })
     .setURL(urls.profile(player.id))
     .setDescription(
       lines.join("\n").slice(0, 4096),
     )
     .setFooter({
-      text: `Page 1/1 • Mode: ${getModeName(mode)}`,
+      text: `Page ${page + 1} • Mode: ${getModeName(mode)}`,
     });
 
-  if (isRecent) {
-    embed.setTitle("List of recent scores:");
-    const firstBeatmapSetId = scores[0]?.beatmap?.set_id;
-    if (Number.isInteger(firstBeatmapSetId) && firstBeatmapSetId > 0) {
-      embed.setThumbnail(urls.beatmapThumbnail(firstBeatmapSetId));
-    }
-  } else {
-    embed.setThumbnail(urls.avatar(player.id));
-  }
+  embed.setThumbnail(urls.avatar(player.id));
 
   return embed;
+}
+
+function createTopPaginationSession(player, mode, pageSize, ownerId) {
+  if (!ownerId) {
+    return null;
+  }
+
+  const now = Date.now();
+  for (const [id, session] of topPaginationSessions) {
+    if (session.expiresAt <= now) {
+      topPaginationSessions.delete(id);
+    }
+  }
+
+  const id = crypto.randomBytes(12).toString("hex");
+  topPaginationSessions.set(id, {
+    ownerId,
+    player: { id: player.id, name: player.name },
+    mode,
+    page: 0,
+    pageSize,
+    hasNext: true,
+    expiresAt: now + TOP_SESSION_TTL,
+  });
+
+  return id;
+}
+
+function createTopPaginationComponents(sessionId, page, hasNext) {
+  if (!sessionId || (page === 0 && !hasNext)) {
+    return [];
+  }
+
+  return [
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${TOP_COMPONENT_PREFIX}:${sessionId}:prev`)
+          .setLabel("Previous")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(page === 0),
+        new ButtonBuilder()
+          .setCustomId(`${TOP_COMPONENT_PREFIX}:${sessionId}:next`)
+          .setLabel("Next")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(!hasNext),
+      )
+      .toJSON(),
+  ];
+}
+
+function getTopPaginationSession(interaction) {
+  const customId = interaction.data?.custom_id;
+  if (typeof customId !== "string") {
+    return { error: "This top-score page is invalid or has expired." };
+  }
+
+  const match = customId.match(/^osu_top:([a-f0-9]{24}):(prev|next)$/);
+  if (!match) {
+    return { error: "This top-score page is invalid or has expired." };
+  }
+
+  const session = topPaginationSessions.get(match[1]);
+  if (!session || session.expiresAt <= Date.now()) {
+    topPaginationSessions.delete(match[1]);
+    return { error: "This top-score page has expired. Run the top command again." };
+  }
+
+  const userId = getDiscordUserId(interaction);
+  if (userId !== session.ownerId) {
+    return { error: "Only the user who requested these top scores can change pages." };
+  }
+
+  if (
+    (match[2] === "prev" && session.page === 0) ||
+    (match[2] === "next" && !session.hasNext)
+  ) {
+    return { error: "There are no more top-score pages in that direction." };
+  }
+
+  return { session, direction: match[2] };
 }
 
 function getPublicErrorMessage(error) {
@@ -730,11 +806,13 @@ async function executeCommand(interaction) {
 
   const scope = spec.type === "top" ? "best" : "recent";
   const index = getOption(interaction, "index");
+  const pageSize =
+    spec.type === "top" ? (getOption(interaction, "limit") ?? TOP_PAGE_SIZE) : 1;
   const limit =
     index !== undefined
       ? 1
       : spec.type === "top"
-        ? (getOption(interaction, "limit") ?? 5)
+        ? pageSize + 1
         : 1;
   const offset = index === undefined ? 0 : index - 1;
   const scores = await getPlayerScores(
@@ -755,13 +833,34 @@ async function executeCommand(interaction) {
     };
   }
 
-  if (index !== undefined) {
+  if (spec.type === "recent" || index !== undefined) {
     return {
-      embeds: [createScoreEmbed(player, scores[0], mode, scope, offset + 1)],
+      embeds: [
+        createScoreEmbed(
+          player,
+          scores[0],
+          mode,
+          scope,
+          index === undefined ? 1 : offset + 1,
+        ),
+      ],
     };
   }
 
-  return { embeds: [createScoresEmbed(player, scores, mode, scope, offset)] };
+  const hasNext = scores.length > pageSize;
+  const sessionId = hasNext
+    ? createTopPaginationSession(
+        player,
+        mode,
+        pageSize,
+        getDiscordUserId(interaction),
+      )
+    : null;
+
+  return {
+    embeds: [createScoresEmbed(player, scores, mode, 0, pageSize)],
+    components: createTopPaginationComponents(sessionId, 0, hasNext),
+  };
 }
 
 async function handleInteraction(interaction) {
@@ -778,6 +877,78 @@ async function handleInteraction(interaction) {
     }
 
     return { content: getPublicErrorMessage(error) };
+  }
+}
+
+function isSupportedComponent(interaction) {
+  return interaction?.type === 3 &&
+    typeof interaction.data?.custom_id === "string" &&
+    interaction.data.custom_id.startsWith(`${TOP_COMPONENT_PREFIX}:`);
+}
+
+function getComponentError(interaction) {
+  const result = getTopPaginationSession(interaction);
+  return result.error ?? null;
+}
+
+async function handleComponentInteraction(interaction) {
+  const result = getTopPaginationSession(interaction);
+  if (result.error) {
+    return { content: result.error, embeds: [], components: [] };
+  }
+
+  const { session, direction } = result;
+  const page = session.page + (direction === "next" ? 1 : -1);
+  try {
+    const scores = await getPlayerScores(
+      session.player.id,
+      session.mode,
+      "best",
+      session.pageSize + 1,
+      false,
+      page * session.pageSize,
+    );
+    if (scores.length === 0) {
+      return {
+        content: "No more top scores are available on this page.",
+        embeds: [],
+        components: [],
+      };
+    }
+
+    session.page = page;
+    session.hasNext = scores.length > session.pageSize;
+    session.expiresAt = Date.now() + TOP_SESSION_TTL;
+    const sessionId = interaction.data.custom_id.split(":")[1];
+
+    return {
+      embeds: [
+        createScoresEmbed(
+          session.player,
+          scores,
+          session.mode,
+          session.page,
+          session.pageSize,
+        ),
+      ],
+      components: createTopPaginationComponents(
+        sessionId,
+        session.page,
+        session.hasNext,
+      ),
+    };
+  } catch (error) {
+    if (error.response || error.request) {
+      console.error("Inlayo osu! API pagination request failed:", error.message);
+    } else {
+      console.error("Failed to handle Inlayo osu! top pagination:", error);
+    }
+
+    return {
+      content: getPublicErrorMessage(error),
+      embeds: [],
+      components: [],
+    };
   }
 }
 
@@ -812,8 +983,11 @@ async function handleMessage(message) {
     index ??= Number(args.shift());
   }
   let mode;
-  if (spec.type === "profile" && args.length > 0) {
-    const requestedMode = PROFILE_MODE_TOKENS.get(args[args.length - 1].toLowerCase());
+  if (
+    ["profile", "top", "recent"].includes(spec.type) &&
+    args.length > 0
+  ) {
+    const requestedMode = MODE_TOKENS.get(args[args.length - 1].toLowerCase());
     if (requestedMode !== undefined) {
       mode = requestedMode;
       args.pop();
@@ -881,9 +1055,12 @@ async function editOriginalResponse(interaction, payload) {
 }
 
 module.exports = {
+  getComponentError,
+  handleComponentInteraction,
   editOriginalResponse,
   handleMessage,
   handleInteraction,
+  isSupportedComponent,
   isSupportedCommand,
   isPrivateCommand,
   registerCommands,

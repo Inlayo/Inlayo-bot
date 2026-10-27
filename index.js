@@ -93,6 +93,33 @@ app.post(
       return res.json({ type: InteractionResponseType.PONG });
     }
 
+    if (req.body?.type === InteractionType.MESSAGE_COMPONENT) {
+      if (!inlayoOsu.isSupportedComponent(req.body)) {
+        return res.status(400).json({ error: "Unsupported interaction." });
+      }
+
+      const componentError = inlayoOsu.getComponentError(req.body);
+      if (componentError) {
+        return res.json({
+          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+          data: { content: componentError, flags: 64 },
+        });
+      }
+
+      res.json({
+        type: InteractionResponseType.DEFERRED_UPDATE_MESSAGE,
+      });
+
+      void inlayoOsu
+        .handleComponentInteraction(req.body)
+        .then((payload) => inlayoOsu.editOriginalResponse(req.body, payload))
+        .catch((error) => {
+          console.error("Failed to update Inlayo top-score page:", error);
+        });
+
+      return;
+    }
+
     if (req.body?.type !== InteractionType.APPLICATION_COMMAND) {
       return res.status(400).json({ error: "Unsupported interaction." });
     }
