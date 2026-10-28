@@ -63,6 +63,18 @@ const SUPPORTED_MODES = [
 const MODE_TOKENS = new Map(
   SUPPORTED_MODES.map(({ name, value }) => [name.toLowerCase(), value]),
 );
+for (const [token, mode] of [
+  ["osu", 0],
+  ["standard", 0],
+  ["std", 0],
+  ["taiko", 1],
+  ["catch", 2],
+  ["ctb", 2],
+  ["catchthebeat", 2],
+  ["mania", 3],
+]) {
+  MODE_TOKENS.set(token, mode);
+}
 const MODE_NAMES = new Map([
   ...MODES.map(({ name, value }) => [value, name]),
   [4, "rx!std"],
@@ -313,14 +325,14 @@ function getApiBaseUrl() {
 function getServerUrls() {
   const apiUrl = new URL(process.env.INLAYO_API_BASE);
   const serverHost = apiUrl.hostname.replace(/^api\./i, "");
-  const serverOrigin = `${apiUrl.protocol}//${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}`;
+  const serverOrigin = `${apiUrl.protocol}//osu.${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}`;
 
   return {
     profile: (playerId) => `${serverOrigin}/u/${playerId}`,
+    score: (scoreId) => `${serverOrigin}/s/${scoreId}`,
     avatar: (playerId) =>
       `${apiUrl.protocol}//a.${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}/${playerId}`,
-    beatmap: (beatmapId) =>
-      `${apiUrl.protocol}//b.${serverHost}${apiUrl.port ? `:${apiUrl.port}` : ""}/${beatmapId}`,
+    beatmap: (beatmapId) => `${serverOrigin}/b/${beatmapId}`,
     beatmapThumbnail: (beatmapsetId) =>
       `https://assets.ppy.sh/beatmaps/${beatmapsetId}/covers/list@2x.jpg`,
   };
@@ -645,7 +657,13 @@ function createScoreEmbed(player, score, mode, scope, index = 1) {
       ...(!isRecent && { iconURL: urls.avatar(player.id) }),
     })
     .setTitle(mapName.slice(0, 256))
-    .setURL(beatmap ? urls.beatmap(beatmap.id) : urls.profile(player.id))
+    .setURL(
+      isRecent && Number.isInteger(score.id)
+        ? urls.score(score.id)
+        : beatmap
+          ? urls.beatmap(beatmap.id)
+          : urls.profile(player.id),
+    )
     .setFooter({
       text: `${isRecent ? `Recent score #${index}` : `Top score #${index}`} • ${getModeName(mode)}${date ? ` • ${date}` : ""}`,
     })
