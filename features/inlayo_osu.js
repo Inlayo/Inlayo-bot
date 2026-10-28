@@ -70,6 +70,21 @@ const MODE_NAMES = new Map([
   [6, "rx!catch"],
   [8, "ap!std"],
 ]);
+const SUPPORTED_MODE_VALUES = new Set(
+  SUPPORTED_MODES.map(({ value }) => value),
+);
+const PREFERRED_MODE_COMMANDS = new Set([
+  "profile",
+  "top",
+  "topscores",
+  "t",
+  "recent",
+  "r",
+  "rs",
+  "recentpass",
+  "rp",
+  "rps",
+]);
 
 const COMMANDS = [
   {
@@ -221,6 +236,11 @@ const commands = slashCommandSpecs.map((spec) => {
         .setDescription("Your username on Inlayo's osu private server")
         .setRequired(true),
     );
+    command.addIntegerOption((option) =>
+      addSupportedModeChoices(
+        option.setName("mode").setDescription("Your preferred game mode"),
+      ),
+    );
   }
 
   if (["profile", "top", "recent"].includes(spec.type)) {
@@ -307,13 +327,40 @@ function getLinkedAccount(userId) {
     return null;
   }
 
-  const username = loadLinkedAccounts()[userId];
-  return typeof username === "string" ? username : null;
+  const account = loadLinkedAccounts()[userId];
+  if (typeof account === "string") {
+    return account;
+  }
+
+  return typeof account?.username === "string" ? account.username : null;
 }
 
-function saveLinkedAccount(userId, username) {
+function getPreferredMode(userId) {
+  if (!userId) {
+    return null;
+  }
+
+  const account = loadLinkedAccounts()[userId];
+  const preferredMode =
+    account && typeof account === "object" ? account.preferredMode : null;
+  return SUPPORTED_MODE_VALUES.has(preferredMode) ? preferredMode : null;
+}
+
+function saveLinkedAccount(userId, username, preferredMode) {
   const accounts = loadLinkedAccounts();
-  accounts[userId] = username;
+  const currentAccount = accounts[userId];
+  const currentPreferredMode =
+    currentAccount && typeof currentAccount === "object"
+      ? currentAccount.preferredMode
+      : null;
+  accounts[userId] = {
+    username,
+    preferredMode: SUPPORTED_MODE_VALUES.has(preferredMode)
+      ? preferredMode
+      : SUPPORTED_MODE_VALUES.has(currentPreferredMode)
+        ? currentPreferredMode
+        : 0,
+  };
   writeLinkedAccounts(accounts);
 }
 
@@ -781,9 +828,11 @@ async function executeCommand(interaction) {
     }
 
     const player = await getPlayer(requestedUsername);
-    saveLinkedAccount(discordUserId, player.name);
+    const preferredMode = getOption(interaction, "mode");
+    saveLinkedAccount(discordUserId, player.name, preferredMode);
+    const savedMode = getPreferredMode(discordUserId);
     return {
-      content: `Linked your Discord account to **${player.name}** on Inlayo's osu private server. You can now use \`!t\` without a username.`,
+      content: `Linked your Discord account to **${player.name}** on Inlayo's osu private server with **${getModeName(savedMode)}** as your preferred mode. You can now use \`!t\` without a username.`,
     };
   }
 
@@ -808,7 +857,12 @@ async function executeCommand(interaction) {
     };
   }
 
-  const mode = getOption(interaction, "mode") ?? spec.mode;
+  const requestedMode = getOption(interaction, "mode");
+  const mode =
+    requestedMode ??
+    (PREFERRED_MODE_COMMANDS.has(commandName)
+      ? (getPreferredMode(discordUserId) ?? spec.mode)
+      : spec.mode);
   const player = await getPlayer(username);
 
   if (spec.type === "profile") {
@@ -1043,6 +1097,13 @@ async function handleMessage(message) {
       args.pop();
     }
   }
+  if (spec.type === "link" && args.length > 1) {
+    const requestedMode = MODE_TOKENS.get(args[args.length - 1].toLowerCase());
+    if (requestedMode !== undefined) {
+      mode = requestedMode;
+      args.pop();
+    }
+  }
   if (index !== undefined && (!Number.isInteger(index) || index < 1 || index > 100)) {
     await message.reply("Score position must be between 1 and 100.");
     return;
@@ -1057,7 +1118,7 @@ async function handleMessage(message) {
   ) {
     await message.reply(
       spec.type === "link"
-        ? "Usage: `!link <username on Inlayo's osu private server>`"
+        ? "Usage: `!link <username on Inlayo's osu private server> [preferred mode]`"
         : "Link your account on Inlayo's osu private server first with `!link <username>` or `/link`.",
     );
     return;
