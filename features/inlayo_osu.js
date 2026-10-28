@@ -879,7 +879,7 @@ async function executeCommand(interaction) {
     saveLinkedAccount(discordUserId, player.name, preferredMode);
     const savedMode = getPreferredMode(discordUserId);
     return {
-      content: `Linked your Discord account to **${player.name}** on Inlayo's osu private server with **${getModeName(savedMode)}** as your preferred mode. You can now use \`!t\` without a username.`,
+      content: `Linked your Discord account to **${player.name}** on Inlayo's osu private server with **${getModeName(savedMode)}** as your preferred mode. You can now use any command without a username.`,
     };
   }
 
