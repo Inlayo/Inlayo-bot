@@ -208,6 +208,12 @@ const COMMANDS = [
     names: ["unlink"],
     description: "Remove your linked username from Inlayo's osu private server.",
   },
+  {
+    type: "mode",
+    mode: 0,
+    names: ["mode"],
+    description: "Set your preferred game mode for osu! commands.",
+  },
 ];
 
 const commandByName = new Map(
@@ -239,6 +245,17 @@ const commands = slashCommandSpecs.map((spec) => {
     command.addIntegerOption((option) =>
       addSupportedModeChoices(
         option.setName("mode").setDescription("Your preferred game mode"),
+      ),
+    );
+  }
+
+  if (spec.type === "mode") {
+    command.addIntegerOption((option) =>
+      addSupportedModeChoices(
+        option
+          .setName("mode")
+          .setDescription("Your preferred game mode")
+          .setRequired(true),
       ),
     );
   }
@@ -404,10 +421,22 @@ async function apiGet(path, params, timeout = API_TIMEOUT) {
 }
 
 async function getPlayer(username) {
-  const player = await apiGet(
-    `/players/${encodeURIComponent(username)}`,
-    { key: "username" },
-  );
+  let player;
+  try {
+    player = await apiGet(
+      `/players/${encodeURIComponent(username)}`,
+      { key: "username" },
+    );
+  } catch (error) {
+    if (error.response?.status !== 404 || !username.includes("_")) {
+      throw error;
+    }
+
+    player = await apiGet(
+      `/players/${encodeURIComponent(username.replace(/_/g, " "))}`,
+      { key: "username" },
+    );
+  }
 
   if (!player || !Number.isInteger(player.id)) {
     throw new Error("Inlayo API returned an invalid player.");
@@ -848,6 +877,26 @@ async function executeCommand(interaction) {
     };
   }
 
+  if (spec.type === "mode") {
+    if (!discordUserId) {
+      return { content: "Your Discord account could not be identified." };
+    }
+
+    const username = getLinkedAccount(discordUserId);
+    if (!username) {
+      return {
+        content:
+          "Link your account on Inlayo's osu private server first with `!link <username>` or `/link`.",
+      };
+    }
+
+    const preferredMode = getOption(interaction, "mode");
+    saveLinkedAccount(discordUserId, username, preferredMode);
+    return {
+      content: `Your preferred game mode has been set to **${getModeName(preferredMode)}**.`,
+    };
+  }
+
   const username =
     requestedUsername ?? getLinkedAccount(discordUserId);
   if (!username) {
@@ -1088,7 +1137,7 @@ async function handleMessage(message) {
   }
   let mode;
   if (
-    ["profile", "top", "recent"].includes(spec.type) &&
+    ["profile", "top", "recent", "mode"].includes(spec.type) &&
     args.length > 0
   ) {
     const requestedMode = MODE_TOKENS.get(args[args.length - 1].toLowerCase());
@@ -1103,6 +1152,10 @@ async function handleMessage(message) {
       mode = requestedMode;
       args.pop();
     }
+  }
+  if (spec.type === "mode" && mode === undefined) {
+    await message.reply("Usage: `!mode <preferred mode>`");
+    return;
   }
   if (index !== undefined && (!Number.isInteger(index) || index < 1 || index > 100)) {
     await message.reply("Score position must be between 1 and 100.");
@@ -1141,7 +1194,7 @@ async function handleMessage(message) {
 
 function isPrivateCommand(interaction) {
   const spec = commandByName.get(interaction?.data?.name);
-  return spec?.type === "link" || spec?.type === "unlink";
+  return ["link", "unlink", "mode"].includes(spec?.type);
 }
 
 async function registerCommands(applicationId, additionalCommands = []) {
