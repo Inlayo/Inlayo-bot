@@ -468,7 +468,7 @@ async function sendLiveNotification(streamInfo, userInfo, channelId) {
     .setTitle(streamInfo.title || "No title")
     .setURL(streamUrl)
     .setColor("#9146FF")
-    .setFooter({ text: "Inlayo's osu private server" })
+    .setFooter({ text: "made by Inlayo" })
     .setTimestamp();
 
   if (streamInfo.game_name) {
