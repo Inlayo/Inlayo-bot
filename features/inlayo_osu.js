@@ -18,7 +18,9 @@ const ACCOUNT_FILE = path.join(__dirname, "data", "osu_accounts.json");
 const TOP_PAGE_SIZE = 5;
 const TOP_SESSION_TTL = 15 * 60 * 1000;
 const TOP_COMPONENT_PREFIX = "osu_top";
+const RECENT_COMPONENT_PREFIX = "osu_recent";
 const topPaginationSessions = new Map();
+const recentPaginationSessions = new Map();
 const MODS = [
   [1, "NF"],
   [2, "EZ"],
@@ -799,6 +801,96 @@ function createTopPaginationComponents(sessionId, page, hasNext) {
   ];
 }
 
+function createRecentPaginationSession(
+  player,
+  mode,
+  ownerId,
+  includeFailed,
+  index,
+  hasNext,
+  score,
+) {
+  if (!ownerId) {
+    return null;
+  }
+
+  const now = Date.now();
+  for (const [id, session] of recentPaginationSessions) {
+    if (session.expiresAt <= now) {
+      recentPaginationSessions.delete(id);
+    }
+  }
+
+  const id = crypto.randomBytes(12).toString("hex");
+  recentPaginationSessions.set(id, {
+    ownerId,
+    player: { id: player.id, name: player.name },
+    mode,
+    includeFailed,
+    index,
+    hasNext,
+    score,
+    expiresAt: now + TOP_SESSION_TTL,
+  });
+
+  return id;
+}
+
+function createRecentPaginationComponents(sessionId, index, hasNext) {
+  if (!sessionId || (index === 1 && !hasNext)) {
+    return [];
+  }
+
+  return [
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${RECENT_COMPONENT_PREFIX}:${sessionId}:prev`)
+          .setLabel("Previous")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(index === 1),
+        new ButtonBuilder()
+          .setCustomId(`${RECENT_COMPONENT_PREFIX}:${sessionId}:next`)
+          .setLabel("Next")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(!hasNext),
+      )
+      .toJSON(),
+  ];
+}
+
+function getRecentPaginationSession(interaction) {
+  const customId = interaction.data?.custom_id;
+  if (typeof customId !== "string") {
+    return { error: "This recent-score page is invalid or has expired." };
+  }
+
+  const match = customId.match(/^osu_recent:([a-f0-9]{24}):(prev|next)$/);
+  if (!match) {
+    return { error: "This recent-score page is invalid or has expired." };
+  }
+
+  const session = recentPaginationSessions.get(match[1]);
+  if (!session || session.expiresAt <= Date.now()) {
+    recentPaginationSessions.delete(match[1]);
+    return { error: "This recent-score page has expired. Run the recent command again." };
+  }
+
+  const userId = getDiscordUserId(interaction);
+  if (userId !== session.ownerId) {
+    return { error: "Only the user who requested this recent score can change scores." };
+  }
+
+  if (
+    (match[2] === "prev" && session.index === 1) ||
+    (match[2] === "next" && !session.hasNext)
+  ) {
+    return { error: "There are no more recent scores in that direction." };
+  }
+
+  return { session, direction: match[2], sessionId: match[1] };
+}
+
 function getTopPaginationSession(interaction) {
   const customId = interaction.data?.custom_id;
   if (typeof customId !== "string") {
@@ -949,15 +1041,31 @@ async function executeCommand(interaction) {
         ? pageSize
         : 1;
   const offset = index === undefined ? 0 : index - 1;
-  const scores = await getPlayerScores(
+  const includeFailed = scope === "recent" && !spec.passes;
+  const scoresRequest = getPlayerScores(
     player.id,
     mode,
     scope,
     limit,
-    scope === "recent" && !spec.passes,
+    includeFailed,
     offset,
     spec.type === "top" ? SCORE_API_TIMEOUT : API_TIMEOUT,
   );
+  const nextRecentScoresRequest =
+    spec.type === "recent"
+      ? getPlayerScores(
+          player.id,
+          mode,
+          scope,
+          1,
+          includeFailed,
+          offset + 1,
+        )
+      : null;
+  const [scores, nextRecentScores] = await Promise.all([
+    scoresRequest,
+    nextRecentScoresRequest,
+  ]);
 
   if (scores.length === 0) {
     return {
@@ -968,7 +1076,30 @@ async function executeCommand(interaction) {
     };
   }
 
-  if (spec.type === "recent" || index !== undefined) {
+  if (spec.type === "recent") {
+    const scoreIndex = offset + 1;
+    const hasNext = nextRecentScores.length > 0;
+    const sessionId = createRecentPaginationSession(
+      player,
+      mode,
+      discordUserId,
+      includeFailed,
+      scoreIndex,
+      hasNext,
+      scores[0],
+    );
+
+    return {
+      embeds: [createScoreEmbed(player, scores[0], mode, scope, scoreIndex)],
+      components: createRecentPaginationComponents(
+        sessionId,
+        scoreIndex,
+        hasNext,
+      ),
+    };
+  }
+
+  if (index !== undefined) {
     return {
       embeds: [
         createScoreEmbed(
@@ -1017,17 +1148,28 @@ async function handleInteraction(interaction) {
 }
 
 function isSupportedComponent(interaction) {
+  const customId = interaction?.data?.custom_id;
   return interaction?.type === 3 &&
-    typeof interaction.data?.custom_id === "string" &&
-    interaction.data.custom_id.startsWith(`${TOP_COMPONENT_PREFIX}:`);
+    typeof customId === "string" &&
+    (customId.startsWith(`${TOP_COMPONENT_PREFIX}:`) ||
+      customId.startsWith(`${RECENT_COMPONENT_PREFIX}:`));
 }
 
 function getComponentError(interaction) {
-  const result = getTopPaginationSession(interaction);
+  const customId = interaction.data?.custom_id;
+  const result = customId?.startsWith(`${RECENT_COMPONENT_PREFIX}:`)
+    ? getRecentPaginationSession(interaction)
+    : getTopPaginationSession(interaction);
   return result.error ?? null;
 }
 
 async function handleComponentInteraction(interaction) {
+  if (
+    interaction.data?.custom_id?.startsWith(`${RECENT_COMPONENT_PREFIX}:`)
+  ) {
+    return handleRecentComponentInteraction(interaction);
+  }
+
   const result = getTopPaginationSession(interaction);
   if (result.error) {
     return { content: result.error, embeds: [], components: [] };
@@ -1117,6 +1259,107 @@ async function handleComponentInteraction(interaction) {
       components: createTopPaginationComponents(
         interaction.data.custom_id.split(":")[1],
         session.page,
+        session.hasNext,
+      ),
+    };
+  }
+}
+
+async function handleRecentComponentInteraction(interaction) {
+  const result = getRecentPaginationSession(interaction);
+  if (result.error) {
+    return { content: result.error, embeds: [], components: [] };
+  }
+
+  const { session, direction, sessionId } = result;
+  const index = session.index + (direction === "next" ? 1 : -1);
+
+  try {
+    const [scores, nextScores] = await Promise.all([
+      getPlayerScores(
+        session.player.id,
+        session.mode,
+        "recent",
+        1,
+        session.includeFailed,
+        index - 1,
+      ),
+      getPlayerScores(
+        session.player.id,
+        session.mode,
+        "recent",
+        1,
+        session.includeFailed,
+        index,
+      ),
+    ]);
+
+    if (scores.length === 0) {
+      if (direction === "next") {
+        session.hasNext = false;
+      }
+      session.expiresAt = Date.now() + TOP_SESSION_TTL;
+      return {
+        content: "There are no more recent scores in that direction.",
+        embeds: [
+          createScoreEmbed(
+            session.player,
+            session.score,
+            session.mode,
+            "recent",
+            session.index,
+          ),
+        ],
+        components: createRecentPaginationComponents(
+          sessionId,
+          session.index,
+          session.hasNext,
+        ),
+      };
+    }
+
+    session.index = index;
+    session.hasNext = nextScores.length > 0;
+    session.score = scores[0];
+    session.expiresAt = Date.now() + TOP_SESSION_TTL;
+
+    return {
+      embeds: [
+        createScoreEmbed(
+          session.player,
+          scores[0],
+          session.mode,
+          "recent",
+          session.index,
+        ),
+      ],
+      components: createRecentPaginationComponents(
+        sessionId,
+        session.index,
+        session.hasNext,
+      ),
+    };
+  } catch (error) {
+    if (error.response || error.request) {
+      console.error("Inlayo osu! recent pagination request failed:", error.message);
+    } else {
+      console.error("Failed to handle Inlayo osu! recent pagination:", error);
+    }
+
+    return {
+      content: getPublicErrorMessage(error),
+      embeds: [
+        createScoreEmbed(
+          session.player,
+          session.score,
+          session.mode,
+          "recent",
+          session.index,
+        ),
+      ],
+      components: createRecentPaginationComponents(
+        sessionId,
+        session.index,
         session.hasNext,
       ),
     };
