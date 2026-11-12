@@ -50,10 +50,10 @@ const MODS = [
   [536870912, "V2"],
 ];
 const MODES = [
-  { name: "osu!", value: 0 },
-  { name: "taiko!", value: 1 },
-  { name: "catch!", value: 2 },
-  { name: "mania!", value: 3 },
+  { name: "vn!std", value: 0 },
+  { name: "vn!taiko", value: 1 },
+  { name: "vn!catch", value: 2 },
+  { name: "vn!mania", value: 3 },
 ];
 const SUPPORTED_MODES = [
   ...MODES,
@@ -66,6 +66,10 @@ const MODE_TOKENS = new Map(
   SUPPORTED_MODES.map(({ name, value }) => [name.toLowerCase(), value]),
 );
 for (const [token, mode] of [
+  ["osu!", 0],
+  ["taiko!", 1],
+  ["catch!", 2],
+  ["mania!", 3],
   ["osu", 0],
   ["standard", 0],
   ["std", 0],
@@ -83,6 +87,12 @@ const MODE_NAMES = new Map([
   [5, "rx!taiko"],
   [6, "rx!catch"],
   [8, "ap!std"],
+]);
+const EMBED_MODE_NAMES = new Map([
+  [0, "osu!standard"],
+  [1, "osu!taiko"],
+  [2, "osu!catch"],
+  [3, "osu!mania"],
 ]);
 const SUPPORTED_MODE_VALUES = new Set(
   SUPPORTED_MODES.map(({ value }) => value),
@@ -498,7 +508,11 @@ function getOption(interaction, name) {
 }
 
 function getModeName(mode) {
-  return MODE_NAMES.get(mode) ?? "osu!";
+  return MODE_NAMES.get(mode) ?? "vn!std";
+}
+
+function getEmbedModeName(mode) {
+  return EMBED_MODE_NAMES.get(mode) ?? getModeName(mode);
 }
 
 function getAccuracy(value) {
@@ -633,7 +647,7 @@ function createProfileEmbed(player, stats, mode) {
       },
     )
     .setFooter({
-      text: `Mode: ${getModeName(mode)} • Joined Inlayo's osu private server ${formatJoinedDate(player.creation_time)}`,
+      text: `Mode: ${getEmbedModeName(mode)} • Joined Inlayo's osu private server ${formatJoinedDate(player.creation_time)}`,
     });
 }
 
@@ -667,7 +681,7 @@ function createScoreEmbed(player, score, mode, scope, index = 1) {
           : urls.profile(player.id),
     )
     .setFooter({
-      text: `${isRecent ? `Recent score #${index}` : `Top score #${index}`} • ${getModeName(mode)}${date ? ` • ${date}` : ""}`,
+      text: `${isRecent ? `Recent score #${index}` : `Top score #${index}`} • ${getEmbedModeName(mode)}${date ? ` • ${date}` : ""}`,
     })
     .addFields(
       {
@@ -743,7 +757,7 @@ function createScoresEmbed(player, scores, mode, page, pageSize) {
       lines.join("\n").slice(0, 4096),
     )
     .setFooter({
-      text: `Page ${page + 1} • Mode: ${getModeName(mode)}`,
+      text: `Page ${page + 1} • Mode: ${getEmbedModeName(mode)}`,
     });
 
   embed.setThumbnail(urls.avatar(player.id));
