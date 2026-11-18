@@ -41,19 +41,17 @@ const client = new Client({
 
 const app = express();
 
-client.once("ready", async () => {
+client.once("clientReady", async () => {
   console.log(`Bot logged in as ${client.user.tag}.`);
   console.log(`Bot ID: ${client.user.id}.`);
 
-  client.user.setActivity("osu!", {
-    type: ActivityType.Playing,
+  client.user.setPresence({
+    activities: [{ name: "osu!", type: ActivityType.Playing }],
+    status: "online",
   });
 
   try {
-    await inlayoOsu.registerCommands(
-      client.user.id,
-      twitchNotification.getSlashCommands(),
-    );
+    await inlayoOsu.registerCommands(client.user.id);
   } catch (error) {
     console.error("Failed to register Inlayo's osu private server commands:", error);
   }
@@ -124,8 +122,7 @@ app.post(
       return res.status(400).json({ error: "Unsupported interaction." });
     }
 
-    const isTwitchCommand = twitchNotification.isSupportedCommand(req.body);
-    if (!isTwitchCommand && !inlayoOsu.isSupportedCommand(req.body)) {
+    if (!inlayoOsu.isSupportedCommand(req.body)) {
       return res.status(400).json({ error: "Unsupported interaction." });
     }
 
@@ -136,11 +133,8 @@ app.post(
         : {}),
     });
 
-    const handleInteraction = isTwitchCommand
-      ? twitchNotification.handleInteraction
-      : inlayoOsu.handleInteraction;
-
-    void handleInteraction(req.body)
+    void inlayoOsu
+      .handleInteraction(req.body)
       .then((payload) => inlayoOsu.editOriginalResponse(req.body, payload))
       .catch((error) => {
         console.error(

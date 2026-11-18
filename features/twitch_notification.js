@@ -6,7 +6,6 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  SlashCommandBuilder,
 } = require("discord.js");
 
 const SETTINGS_DIR = path.join(__dirname, "twitch_notification", "settings");
@@ -18,29 +17,8 @@ const TWITCH_CHECK_INTERVAL = 60 * 1000;
 const TWITCH_TOKEN_REFRESH_INTERVAL = 60 * 60 * 1000;
 const PREFIX = "!twitch";
 const MAX_USER_IDS_PER_REQUEST = 100;
-const HELP_TEXT = "Commands: channel, add <streamer>, delete <streamer>, list";
-const slashCommand = new SlashCommandBuilder()
-  .setName("twitch")
-  .setDescription("Manage Twitch stream notifications for this channel.")
-  .addStringOption((option) =>
-    option
-      .setName("action")
-      .setDescription("Choose a Twitch notification action.")
-      .setRequired(true)
-      .addChoices(
-        { name: "channel", value: "channel" },
-        { name: "add", value: "add" },
-        { name: "delete", value: "delete" },
-        { name: "list", value: "list" },
-      ),
-  )
-  .addStringOption((option) =>
-    option
-      .setName("streamer")
-      .setDescription("Twitch streamer login (required for add and delete)")
-      .setRequired(false),
-  )
-  .toJSON();
+const HELP_TEXT =
+  "Commands: !twitch channel, !twitch add <streamer>, !twitch delete <streamer>, !twitch list";
 
 let client = null;
 let twitchToken = null;
@@ -683,41 +661,6 @@ async function handleMessage(message) {
   }
 }
 
-async function handleInteraction(interaction) {
-  if (!interaction.guild_id || !interaction.channel_id) {
-    return { content: "Twitch commands can only be used in a server." };
-  }
-
-  const options = interaction.data.options ?? [];
-  const action = options.find((option) => option.name === "action")?.value;
-  const streamer = options.find((option) => option.name === "streamer")?.value;
-
-  switch (action) {
-    case "channel": {
-      const created = ensureChannelFile(interaction.channel_id);
-      return {
-        content: getChannelSetupMessage(created, "/twitch (action: add)"),
-      };
-    }
-    case "add":
-      if (!streamer?.trim()) {
-        return { content: "Please provide a streamer name for the add action." };
-      }
-      return { content: await addStreamer(interaction.channel_id, streamer ?? "") };
-    case "delete":
-      if (!streamer?.trim()) {
-        return { content: "Please provide a streamer name for the delete action." };
-      }
-      return {
-        content: deleteStreamer(interaction.channel_id, streamer ?? ""),
-      };
-    case "list":
-      return { content: listStreamers(interaction.channel_id) };
-    default:
-      return { content: HELP_TEXT };
-  }
-}
-
 async function initialize(discordClient) {
   if (client) {
     return;
@@ -772,10 +715,6 @@ function getStatus() {
 module.exports = {
   initialize,
   handleMessage,
-  getSlashCommands: () => [slashCommand],
-  isSupportedCommand: (interaction) =>
-    interaction?.data?.name === slashCommand.name,
-  handleInteraction,
   getStatus,
   destroy,
 };
